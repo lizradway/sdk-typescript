@@ -689,6 +689,43 @@ describe('BedrockModel', () => {
 })
 ```
 
+### Test Model Providers
+
+**When to use each test provider:**
+
+- **`MockMessageModel`**: For agent loop tests and high-level flows - focused on content blocks
+- **`TestModelProvider`**: For low-level event streaming tests where you need precise control over individual events
+
+#### MockMessageModel - Content-Focused Testing
+
+For tests focused on messages, you SHOULD use `MockMessageModel` with a content-focused API that eliminates boilerplate:
+
+```typescript
+import { MockMessageModel } from '../__fixtures__/mock-message-model'
+
+// ✅ RECOMMENDED - Single content block (most common)
+const provider = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Hello' })
+
+// ✅ RECOMMENDED - Array of content blocks
+const provider = new MockMessageModel().addTurn([
+  { type: 'textBlock', text: 'Let me help' },
+  { type: 'toolUseBlock', name: 'calc', toolUseId: 'id-1', input: {} },
+])
+
+// ✅ RECOMMENDED - Multi-turn with builder pattern
+const provider = new MockMessageModel()
+  .addTurn({ type: 'toolUseBlock', name: 'calc', toolUseId: 'id-1', input: {} }) // Auto-derives 'toolUse'
+  .addTurn({ type: 'textBlock', text: 'The answer is 42' }) // Auto-derives 'endTurn'
+
+// ✅ OPTIONAL - Explicit stopReason when needed
+const provider = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Partial response' }, 'maxTokens')
+
+// ✅ OPTIONAL - Error handling
+const provider = new MockMessageModel()
+  .addTurn({ type: 'textBlock', text: 'Success' })
+  .addTurn(new Error('Model failed'))
+```
+
 ## Things to Do
 
 ✅ **Do**:
