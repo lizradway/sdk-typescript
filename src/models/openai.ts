@@ -15,9 +15,10 @@ import type { Message } from '../types/messages.js'
 import type { ImageBlock, DocumentBlock, MediaFormats } from '../types/media.js'
 import { encodeBase64 } from '../types/media.js'
 import type { ModelStreamEvent } from '../models/streaming.js'
-import { ContextWindowOverflowError } from '../errors.js'
+import { ContextWindowOverflowError, normalizeError } from '../errors.js'
 import type { ChatCompletionContentPartText } from 'openai/resources/index.mjs'
 import { logger } from '../logging/logger.js'
+import { Tracer } from '../telemetry/tracer.js'
 
 /**
  * Browser-compatible MIME type lookup.
@@ -219,6 +220,7 @@ export interface OpenAIModelOptions extends OpenAIModelConfig {
 export class OpenAIModel extends Model<OpenAIModelConfig> {
   private _config: OpenAIModelConfig
   private _client: OpenAI
+  private _tracer?: Tracer
 
   /**
    * Creates a new OpenAIModel instance.
@@ -288,6 +290,11 @@ export class OpenAIModel extends Model<OpenAIModelConfig> {
         ...(apiKey ? { apiKey } : {}),
         ...clientConfig,
       })
+    }
+
+    // Initialize tracer if telemetry is enabled
+    if (modelConfig?.telemetryConfig?.enabled === true) {
+      this._tracer = new Tracer(modelConfig.telemetryConfig)
     }
   }
 
@@ -370,6 +377,9 @@ export class OpenAIModel extends Model<OpenAIModelConfig> {
       throw new Error('At least one message is required')
     }
 
+    // Start model span if telemetry is enabled
+    const modelSpan = this._tracer?.startModelInvokeSpan(messages, undefined, this._config.modelId || DEFAULT_OPENAI_MODEL_ID)
+
     try {
       // Format the request
       const request = this._formatRequest(messages, options)
@@ -396,6 +406,8 @@ export class OpenAIModel extends Model<OpenAIModelConfig> {
         }
       } | null = null
 
+      let stopReason: string | undefined
+
       // Process streaming response
       for await (const chunk of stream) {
         if (!chunk.choices || chunk.choices.length === 0) {
@@ -417,6 +429,11 @@ export class OpenAIModel extends Model<OpenAIModelConfig> {
         // Map chunk to SDK events
         const events = this._mapOpenAIChunkToSDKEvents(chunk, streamState, activeToolCalls)
         for (const event of events) {
+          // Capture stop reason from message stop events
+          if (event.type === 'modelMessageStopEvent') {
+            stopReason = event.stopReason
+          }
+
           // Emit buffered usage before message stop
           if (event.type === 'modelMessageStopEvent' && bufferedUsage) {
             yield bufferedUsage
@@ -431,8 +448,18 @@ export class OpenAIModel extends Model<OpenAIModelConfig> {
       if (bufferedUsage) {
         yield bufferedUsage
       }
+
+      // End model span with usage and stop reason if telemetry is enabled
+      if (modelSpan && this._tracer) {
+        this._tracer.endModelInvokeSpan(modelSpan, undefined, bufferedUsage?.usage, undefined, stopReason)
+      }
     } catch (error) {
-      const err = error as Error
+      const err = normalizeError(error)
+
+      // End model span with error if telemetry is enabled
+      if (modelSpan && this._tracer) {
+        this._tracer.endModelInvokeSpan(modelSpan, undefined, undefined, undefined, undefined, err)
+      }
 
       // Check for context window overflow using simple pattern matching
       if (OPENAI_CONTEXT_WINDOW_OVERFLOW_PATTERNS.some((pattern) => err.message?.toLowerCase().includes(pattern))) {

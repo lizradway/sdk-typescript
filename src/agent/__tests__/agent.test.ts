@@ -53,7 +53,12 @@ describe('Agent', () => {
 
         expect(items.length).toBeGreaterThan(0)
         const firstItem = items[0]
-        expect(firstItem).toEqual(new BeforeInvocationEvent({ agent: agent }))
+        expect(firstItem).toEqual(
+          new BeforeInvocationEvent({
+            agent: agent,
+            inputMessages: [new Message({ role: 'user', content: [new TextBlock('Test prompt')] })],
+          })
+        )
       })
 
       it('returns AgentResult as generator return value', async () => {

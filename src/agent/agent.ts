@@ -15,8 +15,12 @@ import {
   type Tool,
   type ToolContext,
   ToolResultBlock,
+  type ToolStreamEvent,
+  type ToolStreamGenerator,
   ToolUseBlock,
+  type Usage,
 } from '../index.js'
+import { EventLoopMetrics, Trace } from '../telemetry/metrics.js'
 import { systemPromptFromData } from '../types/messages.js'
 import { normalizeError, ConcurrentInvocationError } from '../errors.js'
 import type { BaseModelConfig, Model, StreamOptions } from '../models/model.js'
@@ -40,6 +44,10 @@ import {
   MessageAddedEvent,
   ModelStreamEventHook,
 } from '../hooks/events.js'
+import { TelemetryHookProvider } from '../telemetry/telemetry-hook-provider.js'
+import type { TelemetryConfig, AttributeValue } from '../telemetry/types.js'
+import { validateIdentifier, IdentifierType } from '../identifier.js'
+import { context, trace } from '@opentelemetry/api'
 
 /**
  * Recursive type definition for nested tool arrays.
@@ -103,6 +111,26 @@ export type AgentConfig = {
    * Hooks enable observing and extending agent behavior.
    */
   hooks?: HookProvider[]
+  /**
+   * Telemetry configuration for OpenTelemetry tracing.
+   * When provided, enables automatic tracing of agent operations.
+   */
+  telemetryConfig?: TelemetryConfig
+  /**
+   * Custom trace attributes to include in all spans.
+   * These attributes are merged with standard attributes in telemetry spans.
+   */
+  customTraceAttributes?: Record<string, AttributeValue>
+  /**
+   * Optional name for the agent, used in telemetry spans.
+   * Defaults to "Strands Agents" if not provided.
+   */
+  name?: string
+  /**
+   * Optional unique identifier for the agent.
+   * If not provided, a random identifier will be generated.
+   */
+  agentId?: string
 }
 
 /**
@@ -114,6 +142,8 @@ export type AgentConfig = {
  * - `Message[]` | `MessageData[]` - Array of messages (appends all to conversation)
  */
 export type InvokeArgs = string | ContentBlock[] | ContentBlockData[] | Message[] | MessageData[]
+
+const DEFAULT_AGENT_NAME = 'Strands Agents'
 
 /**
  * Orchestrates the interaction between a model, a set of tools, and MCP clients.
@@ -150,11 +180,23 @@ export class Agent implements AgentData {
    */
   public systemPrompt?: SystemPrompt
 
+  /**
+   * The name of the agent, used in telemetry spans.
+   */
+  public name: string
+
+  /**
+   * The unique identifier of the agent instance, used in telemetry spans.
+   */
+  public readonly agentId: string
+
   private _toolRegistry: ToolRegistry
   private _mcpClients: McpClient[]
   private _initialized: boolean
   private _isInvoking: boolean = false
   private _printer?: Printer
+  private _eventLoopMetrics: EventLoopMetrics
+  private _telemetryHookProvider?: TelemetryHookProvider
 
   /**
    * Creates an instance of the Agent.
@@ -165,6 +207,8 @@ export class Agent implements AgentData {
     this.messages = (config?.messages ?? []).map((msg) => (msg instanceof Message ? msg : Message.fromMessageData(msg)))
     this.state = new AgentState(config?.state)
     this.conversationManager = config?.conversationManager ?? new SlidingWindowConversationManager({ windowSize: 40 })
+    this.name = config?.name ?? DEFAULT_AGENT_NAME
+    this.agentId = validateIdentifier(config?.agentId, IdentifierType.AGENT)
 
     // Initialize hooks and register conversation manager hooks
     this.hooks = new HookRegistryImplementation()
@@ -190,6 +234,16 @@ export class Agent implements AgentData {
     if (printer) {
       this._printer = new AgentPrinter(getDefaultAppender())
     }
+
+    // Initialize telemetry via hook provider if enabled
+    // This keeps the same user-facing API (telemetryConfig) but implements it via hooks internally
+    if (config?.telemetryConfig?.enabled === true) {
+      this._telemetryHookProvider = new TelemetryHookProvider(config.telemetryConfig)
+      this.hooks.addHook(this._telemetryHookProvider)
+    }
+
+    // Initialize event loop metrics for tracking
+    this._eventLoopMetrics = new EventLoopMetrics()
 
     this._initialized = false
   }
@@ -240,6 +294,24 @@ export class Agent implements AgentData {
    */
   get toolRegistry(): ToolRegistry {
     return this._toolRegistry
+  }
+
+  /**
+   * The current trace span for telemetry (if telemetry is enabled).
+   * Returns the span object for inspection in tests or external telemetry systems.
+   * Matches the Python SDK's trace_span property.
+   */
+  get traceSpan(): import('../telemetry/types.js').TracerSpan | undefined {
+    return this._telemetryHookProvider?.agentSpan
+  }
+
+  /**
+   * Event loop metrics for tracking agent execution statistics.
+   * Provides access to cycle counts, tool usage, token consumption, and timing data.
+   * Matches the Python SDK's event_loop_metrics property.
+   */
+  get eventLoopMetrics(): EventLoopMetrics {
+    return this._eventLoopMetrics
   }
 
   /**
@@ -334,19 +406,80 @@ export class Agent implements AgentData {
    */
   private async *_stream(args: InvokeArgs): AsyncGenerator<AgentStreamEvent, AgentResult, undefined> {
     let currentArgs: InvokeArgs | undefined = args
+    let result: AgentResult | undefined
+    let invocationError: Error | undefined
 
-    // Emit event before the loop starts
-    yield new BeforeInvocationEvent({ agent: this })
+    // Normalize input to get the user messages for telemetry
+    const inputMessages = this._normalizeInput(args)
+
+    // Emit event before the loop starts (with input messages for telemetry)
+    yield new BeforeInvocationEvent({ agent: this, inputMessages })
+    
+    // Start a new agent invocation in event loop metrics (always, regardless of telemetry)
+    this._eventLoopMetrics.resetUsageMetrics()
 
     try {
-      // Main agent loop - continues until model stops without requesting tools
-      while (true) {
+      // Execute agent loop - telemetry hooks handle span creation/ending
+      result = yield* this._executeAgentLoop(currentArgs)
+      
+      return result
+    } catch (error) {
+      invocationError = error as Error
+      throw error
+    } finally {
+      // Always emit final event with result
+      // TelemetryHookProvider tracks accumulated usage internally
+      const afterEvent: {
+        agent: Agent
+        result?: { message: Message; stopReason: string }
+        error?: Error
+      } = {
+        agent: this,
+      }
+      if (result) {
+        afterEvent.result = { message: result.lastMessage, stopReason: result.stopReason }
+      }
+      if (invocationError) {
+        afterEvent.error = invocationError
+      }
+      yield new AfterInvocationEvent(afterEvent)
+    }
+  }
+
+  /**
+   * Execute the main agent loop.
+   * Telemetry hooks handle span creation/ending for model and tool calls.
+   *
+   * @param initialArgs - Arguments for the first invocation
+   * @returns Async generator that yields AgentStreamEvent objects and returns AgentResult
+   */
+  private async *_executeAgentLoop(initialArgs?: InvokeArgs): AsyncGenerator<AgentStreamEvent, AgentResult, undefined> {
+    let currentArgs: InvokeArgs | undefined = initialArgs
+
+    // Main agent loop - continues until model stops without requesting tools
+    let cycleCount = 0
+    while (true) {
+      cycleCount++
+      const cycleId = `cycle-${cycleCount}`
+
+      // Start cycle tracking in EventLoopMetrics
+      const { startTime: cycleStartTime, cycleTrace } = this._eventLoopMetrics.startCycle({
+        event_loop_cycle_id: cycleId,
+      })
+
+      try {
         const modelResult = yield* this.invokeModel(currentArgs)
         currentArgs = undefined // Only pass args on first invocation
         if (modelResult.stopReason !== 'toolUse') {
           // Loop terminates - no tool use requested
           // Add assistant message now that we're returning
           yield await this._appendMessage(modelResult.message)
+
+          // End cycle tracking in EventLoopMetrics
+          this._eventLoopMetrics.endCycle(cycleStartTime, cycleTrace, {
+            event_loop_cycle_id: cycleId,
+          }, modelResult.message)
+
           return new AgentResult({
             stopReason: modelResult.stopReason,
             lastMessage: modelResult.message,
@@ -361,11 +494,20 @@ export class Agent implements AgentData {
         yield await this._appendMessage(modelResult.message)
         yield await this._appendMessage(toolResultMessage)
 
+        // End cycle tracking in EventLoopMetrics
+        this._eventLoopMetrics.endCycle(cycleStartTime, cycleTrace, {
+          event_loop_cycle_id: cycleId,
+        }, modelResult.message)
+
         // Continue loop
+      } catch (error) {
+        // End cycle tracking in EventLoopMetrics (even on error)
+        this._eventLoopMetrics.endCycle(cycleStartTime, cycleTrace, {
+          event_loop_cycle_id: cycleId,
+        })
+
+        throw error
       }
-    } finally {
-      // Always emit final event
-      yield new AfterInvocationEvent({ agent: this })
     }
   }
 
@@ -430,7 +572,7 @@ export class Agent implements AgentData {
    * @returns Object containing the assistant message and stop reason
    */
   private async *invokeModel(
-    args?: InvokeArgs
+    args?: InvokeArgs,
   ): AsyncGenerator<AgentStreamEvent, { message: Message; stopReason: string }, undefined> {
     // Normalize input and append messages to conversation
     const messagesToAppend = this._normalizeInput(args)
@@ -447,9 +589,24 @@ export class Agent implements AgentData {
     yield new BeforeModelCallEvent({ agent: this })
 
     try {
-      const { message, stopReason } = yield* this._streamFromModel(this.messages, streamOptions)
+      const { message, stopReason, usage, metrics } = yield* this._streamFromModel(this.messages, streamOptions)
 
-      yield new AfterModelCallEvent({ agent: this, stopData: { message, stopReason } })
+      const afterModelEvent: {
+        agent: Agent
+        stopData: { message: Message; stopReason: string }
+        usage?: { inputTokens: number; outputTokens: number; totalTokens: number; cacheReadInputTokens?: number; cacheWriteInputTokens?: number }
+        metrics?: { timeToFirstByteMs?: number; latencyMs?: number }
+      } = {
+        agent: this,
+        stopData: { message, stopReason },
+      }
+      if (usage) {
+        afterModelEvent.usage = usage
+      }
+      if (metrics) {
+        afterModelEvent.metrics = metrics
+      }
+      yield new AfterModelCallEvent(afterModelEvent)
 
       return { message, stopReason }
     } catch (error) {
@@ -476,12 +633,12 @@ export class Agent implements AgentData {
    *
    * @param messages - Messages to send to the model
    * @param streamOptions - Options for streaming
-   * @returns Object containing the assistant message and stop reason
+   * @returns Object containing the assistant message, stop reason, usage, and metrics
    */
   private async *_streamFromModel(
     messages: Message[],
-    streamOptions: StreamOptions
-  ): AsyncGenerator<AgentStreamEvent, { message: Message; stopReason: string }, undefined> {
+    streamOptions: StreamOptions,
+  ): AsyncGenerator<AgentStreamEvent, { message: Message; stopReason: string; usage?: Usage; metrics?: { timeToFirstByteMs?: number; latencyMs?: number } }, undefined> {
     const streamGenerator = this.model.streamAggregated(messages, streamOptions)
     let result = await streamGenerator.next()
 
@@ -496,8 +653,33 @@ export class Agent implements AgentData {
       result = await streamGenerator.next()
     }
 
+    // Extract usage and metrics from metadata (only if defined)
+    const rawUsage = result.value.metadata?.usage
+    const rawMetrics = result.value.metadata?.metrics
+
+    // Update EventLoopMetrics with token usage if available
+    if (rawUsage) {
+      this._eventLoopMetrics.updateUsage(rawUsage)
+      
+      // Update latency metrics if available
+      if (rawMetrics?.latencyMs) {
+        this._eventLoopMetrics.updateMetrics(rawMetrics)
+      }
+    }
+
     // result.done is true, result.value contains the return value
-    return result.value
+    // Only include usage/metrics if they are defined (exactOptionalPropertyTypes)
+    const returnValue: { message: Message; stopReason: string; usage?: Usage; metrics?: { timeToFirstByteMs?: number; latencyMs?: number } } = {
+      message: result.value.message,
+      stopReason: result.value.stopReason,
+    }
+    if (rawUsage) {
+      returnValue.usage = rawUsage
+    }
+    if (rawMetrics) {
+      returnValue.metrics = rawMetrics
+    }
+    return returnValue
   }
 
   /**
@@ -567,7 +749,13 @@ export class Agent implements AgentData {
       input: toolUseBlock.input,
     }
 
-    yield new BeforeToolCallEvent({ agent: this, toolUse, tool })
+    // Create BeforeToolCallEvent - telemetry hooks will create spans and set active context
+    const beforeEvent = new BeforeToolCallEvent({
+      agent: this,
+      toolUse,
+      tool,
+    })
+    yield beforeEvent
 
     if (!tool) {
       // Tool not found - return error result instead of throwing
@@ -582,6 +770,11 @@ export class Agent implements AgentData {
       return errorResult
     }
 
+    // Get span from hook if set (for context propagation to MCP tools)
+    const hookSpan = beforeEvent._activeSpan
+    // Get tracing context from hook if set (for tools to use)
+    const tracingContext = beforeEvent._tracingContext
+
     // Execute tool and collect result
     const toolContext: ToolContext = {
       toolUse: {
@@ -590,10 +783,20 @@ export class Agent implements AgentData {
         input: toolUseBlock.input,
       },
       agent: this,
+      // Include tracing context if available (for distributed tracing)
+      ...(tracingContext && { tracing: tracingContext }),
     }
 
+    // Track tool execution time for EventLoopMetrics
+    const toolStartTime = Date.now() / 1000
+    const toolTrace = new Trace(`Tool: ${toolUseBlock.name}`, undefined, toolStartTime)
+
     try {
-      const toolGenerator = tool.stream(toolContext)
+      // Execute tool with the hook span as active context for trace propagation (if available)
+      // This allows MCP instrumentation to find the active span and inject trace context
+      const toolGenerator = hookSpan 
+        ? this._executeToolWithActiveSpan(tool, toolContext, hookSpan)
+        : tool.stream(toolContext)
 
       // Use yield* to delegate to the tool generator and capture the return value
       const toolResult = yield* toolGenerator
@@ -608,10 +811,32 @@ export class Agent implements AgentData {
 
         yield new AfterToolCallEvent({ agent: this, toolUse, tool, result: errorResult })
 
+        // Track tool failure in EventLoopMetrics
+        const toolEndTime = Date.now() / 1000
+        const toolDuration = toolEndTime - toolStartTime
+        this._eventLoopMetrics.addToolUsage(
+          toolUse,
+          toolDuration,
+          toolTrace,
+          false, // success = false
+          new Message({ role: 'user', content: [errorResult] })
+        )
+
         return errorResult
       }
 
       yield new AfterToolCallEvent({ agent: this, toolUse, tool, result: toolResult })
+
+      // Track tool success in EventLoopMetrics
+      const toolEndTime = Date.now() / 1000
+      const toolDuration = toolEndTime - toolStartTime
+      this._eventLoopMetrics.addToolUsage(
+        toolUse,
+        toolDuration,
+        toolTrace,
+        true, // success = true
+        new Message({ role: 'user', content: [toolResult] })
+      )
 
       // Tool already returns ToolResultBlock directly
       return toolResult
@@ -627,8 +852,62 @@ export class Agent implements AgentData {
 
       yield new AfterToolCallEvent({ agent: this, toolUse, tool, result: errorResult, error: toolError })
 
+      // Track tool error in EventLoopMetrics
+      const toolEndTime = Date.now() / 1000
+      const toolDuration = toolEndTime - toolStartTime
+      this._eventLoopMetrics.addToolUsage(
+        toolUse,
+        toolDuration,
+        toolTrace,
+        false, // success = false
+        new Message({ role: 'user', content: [errorResult] })
+      )
+
       return errorResult
     }
+  }
+
+  /**
+   * Execute a tool with the given span set as active context.
+   * This enables MCP instrumentation to find the active span and inject trace context.
+   *
+   * The key insight is that we need to wrap the ITERATION of the generator, not just
+   * the creation of it. The generator is lazy - it doesn't execute until we iterate.
+   *
+   * @param tool - The tool to execute
+   * @param toolContext - The tool execution context
+   * @param activeSpan - The span to set as active context
+   * @returns AsyncGenerator yielding tool results
+   */
+  private async *_executeToolWithActiveSpan(
+    tool: Tool,
+    toolContext: ToolContext,
+    activeSpan: import('@opentelemetry/api').Span
+  ): ToolStreamGenerator {
+    // Set the span as active in the OpenTelemetry context
+    // trace.setSpan returns a NEW context with the span set
+    const spanContext = trace.setSpan(context.active(), activeSpan)
+    
+    // Get the generator from the tool
+    const toolGenerator = tool.stream(toolContext)
+    
+    // Iterate over the generator within the active span context
+    // This ensures the context is active when callTool() is actually invoked
+    let result = await context.with(spanContext, async () => {
+      return await toolGenerator.next()
+    })
+    
+    while (!result.done) {
+      // Yield intermediate events (ToolStreamEvent)
+      yield result.value as ToolStreamEvent
+      // Keep the context active for each iteration
+      result = await context.with(spanContext, async () => {
+        return await toolGenerator.next()
+      })
+    }
+    
+    // Return the final value (ToolResultBlock)
+    return result.value
   }
 
   /**

@@ -53,6 +53,12 @@ export interface BaseModelConfig {
    * @see Provider-specific documentation for details
    */
   topP?: number
+
+  /**
+   * Telemetry configuration for OpenTelemetry tracing.
+   * When provided, enables automatic tracing of model invocations.
+   */
+  telemetryConfig?: import('../telemetry/types.js').TelemetryConfig
 }
 
 /**
@@ -74,6 +80,13 @@ export interface StreamOptions {
    * Controls how the model selects tools to use.
    */
   toolChoice?: ToolChoice
+
+  /**
+   * Parent span for telemetry tracing.
+   * When provided, model invocation spans will be linked to this parent span.
+   * @internal
+   */
+  parentSpan?: unknown
 }
 
 /**

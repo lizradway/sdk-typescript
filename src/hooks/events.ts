@@ -1,8 +1,39 @@
 import type { AgentData } from '../types/agent.js'
 import type { ContentBlock, Message, ToolResultBlock } from '../types/messages.js'
-import type { Tool } from '../tools/tool.js'
+import type { Tool, TracingContext } from '../tools/tool.js'
 import type { JSONValue } from '../types/json.js'
 import type { ModelStreamEvent } from '../models/streaming.js'
+import type { Span } from '@opentelemetry/api'
+
+/**
+ * Usage information from model calls for telemetry.
+ */
+export interface ModelUsage {
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  cacheReadInputTokens?: number
+  cacheWriteInputTokens?: number
+}
+
+/**
+ * Metrics from model calls for telemetry.
+ */
+export interface ModelMetrics {
+  timeToFirstByteMs?: number
+  latencyMs?: number
+}
+
+/**
+ * Accumulated usage across all model calls in an invocation.
+ */
+export interface AccumulatedUsage {
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  cacheReadInputTokens: number
+  cacheWriteInputTokens: number
+}
 
 /**
  * Base class for all hook events.
@@ -26,10 +57,16 @@ export abstract class HookEvent {
 export class BeforeInvocationEvent extends HookEvent {
   readonly type = 'beforeInvocationEvent' as const
   readonly agent: AgentData
+  /**
+   * The normalized input messages for this invocation.
+   * Useful for telemetry to capture the input.
+   */
+  readonly inputMessages: Message[]
 
-  constructor(data: { agent: AgentData }) {
+  constructor(data: { agent: AgentData; inputMessages?: Message[] }) {
     super()
     this.agent = data.agent
+    this.inputMessages = data.inputMessages ?? []
   }
 }
 
@@ -41,10 +78,36 @@ export class BeforeInvocationEvent extends HookEvent {
 export class AfterInvocationEvent extends HookEvent {
   readonly type = 'afterInvocationEvent' as const
   readonly agent: AgentData
+  /**
+   * The result of the invocation, if successful.
+   */
+  readonly result?: { message: Message; stopReason: string }
+  /**
+   * Accumulated token usage across all model calls in this invocation.
+   */
+  readonly accumulatedUsage?: AccumulatedUsage
+  /**
+   * Error that occurred during invocation, if any.
+   */
+  readonly error?: Error
 
-  constructor(data: { agent: AgentData }) {
+  constructor(data: {
+    agent: AgentData
+    result?: { message: Message; stopReason: string }
+    accumulatedUsage?: AccumulatedUsage
+    error?: Error
+  }) {
     super()
     this.agent = data.agent
+    if (data.result !== undefined) {
+      this.result = data.result
+    }
+    if (data.accumulatedUsage !== undefined) {
+      this.accumulatedUsage = data.accumulatedUsage
+    }
+    if (data.error !== undefined) {
+      this.error = data.error
+    }
   }
 
   override _shouldReverseCallbacks(): boolean {
@@ -82,16 +145,61 @@ export class BeforeToolCallEvent extends HookEvent {
     input: JSONValue
   }
   readonly tool: Tool | undefined
+  /**
+   * Parent span for telemetry hierarchy.
+   * Hook providers can use this to create child spans.
+   */
+  readonly parentSpan?: Span
+
+  /**
+   * Span set by telemetry hook provider for context propagation.
+   * The agent will use this span as the active context during tool execution.
+   * @internal
+   */
+  _activeSpan?: Span
+
+  /**
+   * Tracing context set by telemetry hook provider.
+   * The agent will pass this to tools via ToolContext.tracing.
+   * @internal
+   */
+  _tracingContext?: TracingContext
 
   constructor(data: {
     agent: AgentData
     toolUse: { name: string; toolUseId: string; input: JSONValue }
     tool: Tool | undefined
+    parentSpan?: Span
   }) {
     super()
     this.agent = data.agent
     this.toolUse = data.toolUse
     this.tool = data.tool
+    if (data.parentSpan !== undefined) {
+      this.parentSpan = data.parentSpan
+    }
+  }
+
+  /**
+   * Set the span that should be active during tool execution.
+   * Called by telemetry hooks to enable trace context propagation to MCP tools.
+   * Also extracts and stores the tracing context for tools to use.
+   */
+  setActiveSpan(span: Span): void {
+    this._activeSpan = span
+    
+    // Extract tracing context from the span for tools to use
+    const spanContext = span.spanContext()
+    const traceFlags = spanContext.traceFlags
+    const traceparent = `00-${spanContext.traceId}-${spanContext.spanId}-${traceFlags.toString(16).padStart(2, '0')}`
+    
+    this._tracingContext = {
+      traceparent,
+      traceId: spanContext.traceId,
+      spanId: spanContext.spanId,
+      traceFlags,
+      // tracestate is not directly available from SpanContext, would need TraceState API
+    }
   }
 }
 
@@ -174,6 +282,14 @@ export class AfterModelCallEvent extends HookEvent {
   readonly agent: AgentData
   readonly stopData?: ModelStopData
   readonly error?: Error
+  /**
+   * Token usage from this model call.
+   */
+  readonly usage?: ModelUsage
+  /**
+   * Performance metrics from this model call.
+   */
+  readonly metrics?: ModelMetrics
 
   /**
    * Optional flag that can be set by hook callbacks to request a retry of the model call.
@@ -182,7 +298,13 @@ export class AfterModelCallEvent extends HookEvent {
    */
   retryModelCall?: boolean
 
-  constructor(data: { agent: AgentData; stopData?: ModelStopData; error?: Error }) {
+  constructor(data: {
+    agent: AgentData
+    stopData?: ModelStopData
+    error?: Error
+    usage?: ModelUsage
+    metrics?: ModelMetrics
+  }) {
     super()
     this.agent = data.agent
     if (data.stopData !== undefined) {
@@ -190,6 +312,12 @@ export class AfterModelCallEvent extends HookEvent {
     }
     if (data.error !== undefined) {
       this.error = data.error
+    }
+    if (data.usage !== undefined) {
+      this.usage = data.usage
+    }
+    if (data.metrics !== undefined) {
+      this.metrics = data.metrics
     }
   }
 

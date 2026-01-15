@@ -6,6 +6,63 @@ import { normalizeError } from '../errors.js'
 export type { ToolSpec } from './types.js'
 
 /**
+ * Tracing context for distributed tracing across tool boundaries.
+ * Tools can use this to propagate trace context to external services.
+ *
+ * @example
+ * ```typescript
+ * // HTTP API tool - adds W3C Trace Context headers
+ * class HttpApiTool extends Tool {
+ *   async *stream(toolContext: ToolContext) {
+ *     const headers: Record<string, string> = {}
+ *     if (toolContext.tracing) {
+ *       headers['traceparent'] = toolContext.tracing.traceparent
+ *       if (toolContext.tracing.tracestate) {
+ *         headers['tracestate'] = toolContext.tracing.tracestate
+ *       }
+ *     }
+ *     const response = await fetch(url, { headers })
+ *     // ...
+ *   }
+ * }
+ * ```
+ */
+export interface TracingContext {
+  /**
+   * W3C Trace Context traceparent header value.
+   * Format: `{version}-{trace-id}-{parent-id}-{trace-flags}`
+   * Example: `00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01`
+   * @see https://www.w3.org/TR/trace-context/#traceparent-header
+   */
+  traceparent: string
+
+  /**
+   * W3C Trace Context tracestate header value (optional).
+   * Vendor-specific trace information.
+   * @see https://www.w3.org/TR/trace-context/#tracestate-header
+   */
+  tracestate?: string
+
+  /**
+   * The trace ID (32 hex characters).
+   * Extracted from traceparent for convenience.
+   */
+  traceId: string
+
+  /**
+   * The span ID / parent ID (16 hex characters).
+   * Extracted from traceparent for convenience.
+   */
+  spanId: string
+
+  /**
+   * Trace flags (1 byte as number).
+   * Bit 0 = sampled flag.
+   */
+  traceFlags: number
+}
+
+/**
  * Context provided to tool implementations during execution.
  * Contains framework-level state and information from the agent invocation.
  */
@@ -21,6 +78,21 @@ export interface ToolContext {
    * Provides access to agent state and other agent-level information.
    */
   agent: AgentData
+
+  /**
+   * Tracing context for distributed tracing (optional).
+   * Present when telemetry is enabled and a tool span exists.
+   * Tools can use this to propagate trace context to external services.
+   *
+   * @example
+   * ```typescript
+   * // Add W3C Trace Context headers to HTTP requests
+   * if (toolContext.tracing) {
+   *   headers['traceparent'] = toolContext.tracing.traceparent
+   * }
+   * ```
+   */
+  tracing?: TracingContext
 }
 
 /**

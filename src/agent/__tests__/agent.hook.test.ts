@@ -34,7 +34,12 @@ describe('Agent Hooks Integration', () => {
 
       expect(lifecycleProvider.invocations).toHaveLength(6)
 
-      expect(lifecycleProvider.invocations[0]).toEqual(new BeforeInvocationEvent({ agent: agent }))
+      expect(lifecycleProvider.invocations[0]).toEqual(
+        new BeforeInvocationEvent({
+          agent: agent,
+          inputMessages: [new Message({ role: 'user', content: [new TextBlock('Hi')] })],
+        })
+      )
       expect(lifecycleProvider.invocations[1]).toEqual(
         new MessageAddedEvent({ agent: agent, message: new Message({ role: 'user', content: [new TextBlock('Hi')] }) })
       )
@@ -54,7 +59,11 @@ describe('Agent Hooks Integration', () => {
           message: new Message({ role: 'assistant', content: [new TextBlock('Hello')] }),
         })
       )
-      expect(lifecycleProvider.invocations[5]).toEqual(new AfterInvocationEvent({ agent }))
+      // AfterInvocationEvent now includes result and accumulatedUsage
+      const afterEvent1 = lifecycleProvider.invocations[5] as AfterInvocationEvent
+      expect(afterEvent1.type).toBe('afterInvocationEvent')
+      expect(afterEvent1.agent).toBe(agent)
+      expect(afterEvent1.result?.stopReason).toBe('endTurn')
     })
 
     it('fires hooks during stream', async () => {
@@ -66,7 +75,12 @@ describe('Agent Hooks Integration', () => {
 
       expect(lifecycleProvider.invocations).toHaveLength(6)
 
-      expect(lifecycleProvider.invocations[0]).toEqual(new BeforeInvocationEvent({ agent: agent }))
+      expect(lifecycleProvider.invocations[0]).toEqual(
+        new BeforeInvocationEvent({
+          agent: agent,
+          inputMessages: [new Message({ role: 'user', content: [new TextBlock('Hi')] })],
+        })
+      )
       expect(lifecycleProvider.invocations[1]).toEqual(
         new MessageAddedEvent({
           agent: agent,
@@ -89,7 +103,11 @@ describe('Agent Hooks Integration', () => {
           message: new Message({ role: 'assistant', content: [new TextBlock('Hello')] }),
         })
       )
-      expect(lifecycleProvider.invocations[5]).toEqual(new AfterInvocationEvent({ agent }))
+      // AfterInvocationEvent now includes result and accumulatedUsage
+      const afterEvent2 = lifecycleProvider.invocations[5] as AfterInvocationEvent
+      expect(afterEvent2.type).toBe('afterInvocationEvent')
+      expect(afterEvent2.agent).toBe(agent)
+      expect(afterEvent2.result?.stopReason).toBe('endTurn')
     })
   })
 
@@ -105,8 +123,17 @@ describe('Agent Hooks Integration', () => {
 
       // Should have all lifecycle events
       expect(lifecycleProvider.invocations).toHaveLength(6)
-      expect(lifecycleProvider.invocations[0]).toEqual(new BeforeInvocationEvent({ agent }))
-      expect(lifecycleProvider.invocations[5]).toEqual(new AfterInvocationEvent({ agent }))
+      expect(lifecycleProvider.invocations[0]).toEqual(
+        new BeforeInvocationEvent({
+          agent,
+          inputMessages: [new Message({ role: 'user', content: [new TextBlock('Hi')] })],
+        })
+      )
+      // AfterInvocationEvent now includes result and accumulatedUsage
+      const afterEvent3 = lifecycleProvider.invocations[5] as AfterInvocationEvent
+      expect(afterEvent3.type).toBe('afterInvocationEvent')
+      expect(afterEvent3.agent).toBe(agent)
+      expect(afterEvent3.result?.stopReason).toBe('endTurn')
     })
   })
 

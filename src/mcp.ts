@@ -3,6 +3,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { takeResult } from '@modelcontextprotocol/sdk/shared/responseMessage.js'
 import type { JSONSchema, JSONValue } from './types/json.js'
 import { McpTool } from './tools/mcp-tool.js'
+import { instrumentMcpClient } from './telemetry/mcp-instrumentation.js'
 
 /** Temporary placeholder for RuntimeConfig */
 export interface RuntimeConfig {
@@ -30,6 +31,10 @@ export class McpClient {
       name: this._clientName,
       version: this._clientVersion,
     })
+
+    // Auto-apply instrumentation for distributed tracing
+    // This will inject OpenTelemetry context into MCP requests
+    instrumentMcpClient(this)
   }
 
   get client(): Client {

@@ -21,6 +21,7 @@ coverage/
 .idea/
 *.swp
 *.swo
+*.kiro/*
 
 # OS files
 .DS_Store

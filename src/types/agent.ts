@@ -1,5 +1,5 @@
 import type { AgentState } from '../agent/state.js'
-import type { Message } from './messages.js'
+import type { Message, SystemPrompt } from './messages.js'
 import type { ModelStreamEvent } from '../models/streaming.js'
 import { ToolStreamEvent } from '../tools/tool.js'
 import type { ContentBlock } from './messages.js'
@@ -15,6 +15,8 @@ import type {
   MessageAddedEvent,
   ModelStreamEventHook,
 } from '../hooks/events.js'
+import type { Model, BaseModelConfig } from '../models/model.js'
+import type { Tool } from '../tools/tool.js'
 
 /**
  * Interface for objects that provide agent state.
@@ -30,6 +32,31 @@ export interface AgentData {
    * The conversation history of messages between user and assistant.
    */
   messages: Message[]
+
+  /**
+   * The name of the agent, used in telemetry spans.
+   */
+  name: string
+
+  /**
+   * The unique identifier of the agent instance.
+   */
+  agentId: string
+
+  /**
+   * The model provider used by the agent for inference.
+   */
+  model: Model<BaseModelConfig>
+
+  /**
+   * The tools available to the agent.
+   */
+  tools: Tool[]
+
+  /**
+   * The system prompt configured for the agent.
+   */
+  systemPrompt?: SystemPrompt
 }
 
 /**

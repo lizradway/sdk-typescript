@@ -23,9 +23,18 @@ describe('BeforeInvocationEvent', () => {
     expect(event).toEqual({
       type: 'beforeInvocationEvent',
       agent: agent,
+      inputMessages: [],
     })
     // @ts-expect-error verifying that property is readonly
     event.agent = new Agent()
+  })
+
+  it('creates instance with inputMessages when provided', () => {
+    const agent = new Agent()
+    const inputMessages = [new Message({ role: 'user', content: [new TextBlock('Hello')] })]
+    const event = new BeforeInvocationEvent({ agent, inputMessages })
+
+    expect(event.inputMessages).toEqual(inputMessages)
   })
 
   it('returns false for _shouldReverseCallbacks', () => {
@@ -132,6 +141,49 @@ describe('BeforeToolCallEvent', () => {
     const toolUse = { name: 'test', toolUseId: 'id', input: {} }
     const event = new BeforeToolCallEvent({ agent, toolUse, tool: undefined })
     expect(event._shouldReverseCallbacks()).toBe(false)
+  })
+
+  it('setActiveSpan sets both _activeSpan and _tracingContext', () => {
+    const agent = new Agent()
+    const toolUse = { name: 'test', toolUseId: 'id', input: {} }
+    const event = new BeforeToolCallEvent({ agent, toolUse, tool: undefined })
+
+    // Create a mock span with spanContext
+    const mockSpan = {
+      spanContext: () => ({
+        traceId: '0af7651916cd43dd8448eb211c80319c',
+        spanId: 'b7ad6b7169203331',
+        traceFlags: 1,
+      }),
+    } as unknown as import('@opentelemetry/api').Span
+
+    event.setActiveSpan(mockSpan)
+
+    expect(event._activeSpan).toBe(mockSpan)
+    expect(event._tracingContext).toEqual({
+      traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
+      traceId: '0af7651916cd43dd8448eb211c80319c',
+      spanId: 'b7ad6b7169203331',
+      traceFlags: 1,
+    })
+  })
+
+  it('setActiveSpan formats traceparent correctly with zero trace flags', () => {
+    const agent = new Agent()
+    const toolUse = { name: 'test', toolUseId: 'id', input: {} }
+    const event = new BeforeToolCallEvent({ agent, toolUse, tool: undefined })
+
+    const mockSpan = {
+      spanContext: () => ({
+        traceId: 'aaaabbbbccccddddeeeeffffgggghhhh',
+        spanId: '1111222233334444',
+        traceFlags: 0,
+      }),
+    } as unknown as import('@opentelemetry/api').Span
+
+    event.setActiveSpan(mockSpan)
+
+    expect(event._tracingContext?.traceparent).toBe('00-aaaabbbbccccddddeeeeffffgggghhhh-1111222233334444-00')
   })
 })
 

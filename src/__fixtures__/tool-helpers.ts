@@ -7,6 +7,38 @@ import type { Tool, ToolContext } from '../tools/tool.js'
 import { ToolResultBlock } from '../types/messages.js'
 import type { JSONValue } from '../types/json.js'
 import { AgentState } from '../agent/state.js'
+import type { AgentData } from '../types/agent.js'
+import type { Model, BaseModelConfig } from '../models/model.js'
+
+/**
+ * Creates a minimal mock model for testing.
+ */
+function createMockModel(): Model<BaseModelConfig> {
+  return {
+    getConfig: () => ({ modelId: 'mock-model' }),
+    stream: async function* () {
+      yield { type: 'text' as const, text: 'mock' }
+    },
+    // eslint-disable-next-line require-yield
+    streamAggregated: async function* () {
+      return { message: { role: 'assistant' as const, content: [] }, stopReason: 'endTurn', metadata: {} }
+    },
+  } as unknown as Model<BaseModelConfig>
+}
+
+/**
+ * Creates a minimal mock AgentData for testing.
+ */
+function createMockAgentData(state: AgentState): AgentData {
+  return {
+    state,
+    messages: [],
+    name: 'test-agent',
+    agentId: 'test-agent-id',
+    model: createMockModel(),
+    tools: [],
+  }
+}
 
 /**
  * Helper to create a mock ToolContext for testing.
@@ -19,12 +51,10 @@ export function createMockContext(
   toolUse: { name: string; toolUseId: string; input: JSONValue },
   agentState?: Record<string, JSONValue>
 ): ToolContext {
+  const state = new AgentState(agentState)
   return {
     toolUse,
-    agent: {
-      state: new AgentState(agentState),
-      messages: [],
-    },
+    agent: createMockAgentData(state),
   }
 }
 

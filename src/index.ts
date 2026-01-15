@@ -88,6 +88,7 @@ export type { ToolSpec, ToolUse, ToolResultStatus, ToolChoice } from './tools/ty
 export type {
   InvokableTool,
   ToolContext,
+  TracingContext,
   ToolStreamEventData,
   ToolStreamEvent,
   ToolStreamGenerator,
@@ -151,7 +152,15 @@ export {
   AfterToolsEvent,
   // ModelStreamEventHook # Disabled for now https://github.com/strands-agents/sdk-typescript/issues/288
 } from './hooks/index.js'
-export type { HookCallback, HookProvider, HookEventConstructor, ModelStopResponse } from './hooks/index.js'
+export type {
+  HookCallback,
+  HookProvider,
+  HookEventConstructor,
+  ModelStopResponse,
+  ModelUsage,
+  ModelMetrics,
+  AccumulatedUsage,
+} from './hooks/index.js'
 
 // Conversation Manager
 export { NullConversationManager } from './conversation-manager/null-conversation-manager.js'
@@ -166,3 +175,28 @@ export type { Logger } from './logging/types.js'
 
 // MCP Client types and implementations
 export { type McpClientConfig, McpClient } from './mcp.js'
+
+// Telemetry
+export { Tracer, StrandsTelemetry, TracerHookAdapter, MeterHookAdapter } from './telemetry/index.js'
+export type {
+  TelemetryConfig,
+  AttributeValue,
+  ITracer,
+  TracerSpanHandle,
+  TracerHookAdapterConfig,
+  StartAgentSpanParams,
+  EndAgentSpanParams,
+  StartModelSpanParams,
+  EndModelSpanParams,
+  StartToolSpanParams,
+  EndToolSpanParams,
+  StartCycleSpanParams,
+  EndCycleSpanParams,
+  IMeter,
+  TokenUsage,
+  MeterHookAdapterConfig,
+  RecordModelCallParams,
+  RecordToolExecutionParams,
+  RecordAgentInvocationParams,
+  RecordCycleParams,
+} from './telemetry/index.js'
