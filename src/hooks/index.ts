@@ -21,12 +21,7 @@ export {
 } from './events.js'
 
 // Event types
-export type {
-  ModelStopData as ModelStopResponse,
-  ModelUsage,
-  ModelMetrics,
-  AccumulatedUsage,
-} from './events.js'
+export type { ModelStopData as ModelStopResponse } from './events.js'
 
 // Registry
 export { HookRegistryImplementation as HookRegistry } from './registry.js'

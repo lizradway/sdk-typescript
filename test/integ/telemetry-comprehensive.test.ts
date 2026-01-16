@@ -3,11 +3,12 @@
  * Verifies all telemetry functionality including span creation, hierarchy, attributes, and edge cases.
  */
 
-import { describe, expect, it } from 'vitest'
-import { Agent, tool } from '@strands-agents/sdk'
+import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import { Agent, tool, StrandsTelemetry } from '@strands-agents/sdk'
 import { z } from 'zod'
 import { collectGenerator } from '$/sdk/__fixtures__/model-test-helpers.js'
 import { bedrock } from './__fixtures__/model-providers.js'
+import { _resetGlobalTelemetryHookProvider, _resetTracerProvider } from '$/sdk/telemetry/config.js'
 
 // Test tools
 const testTool = tool({
@@ -32,20 +33,26 @@ const errorTool = tool({
 
 describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => {
   describe('Span Creation Verification', () => {
+    beforeEach(() => {
+      // Enable telemetry by instantiating StrandsTelemetry
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      // Reset global telemetry state
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('creates agent invocation span', async () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const { result } = await collectGenerator(agent.stream('Say hello'))
 
       expect(result).toBeDefined()
-
-      // Verify agent span was created
       expect(agent.traceSpan).toBeDefined()
     })
 
@@ -53,16 +60,11 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const { result } = await collectGenerator(agent.stream('Say hello'))
 
       expect(result).toBeDefined()
-
-      // Verify agent span was created (model spans are children of agent span)
       expect(agent.traceSpan).toBeDefined()
     })
 
@@ -71,9 +73,6 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const { result } = await collectGenerator(
@@ -81,8 +80,6 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
       )
 
       expect(result).toBeDefined()
-
-      // Verify agent span was created (tool spans are children of agent span)
       expect(agent.traceSpan).toBeDefined()
     })
 
@@ -90,29 +87,30 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const { result } = await collectGenerator(agent.stream('Say hello'))
 
       expect(result).toBeDefined()
-
-      // Verify agent span was created (cycle spans are children of agent span)
       expect(agent.traceSpan).toBeDefined()
     })
   })
 
   describe('Span Hierarchy Verification', () => {
+    beforeEach(() => {
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('verifies parent-child relationships', async () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const { result } = await collectGenerator(
@@ -120,11 +118,8 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
       )
 
       expect(result).toBeDefined()
-
-      // Verify agent span was created
       expect(agent.traceSpan).toBeDefined()
 
-      // Verify span is properly ended
       if (agent.traceSpan) {
         expect(agent.traceSpan.isRecording()).toBe(false)
       }
@@ -134,16 +129,11 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const { result } = await collectGenerator(agent.stream('Say hello'))
 
       expect(result).toBeDefined()
-
-      // Verify agent span was created
       expect(agent.traceSpan).toBeDefined()
     })
 
@@ -152,9 +142,6 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const { result } = await collectGenerator(
@@ -162,27 +149,29 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
       )
 
       expect(result).toBeDefined()
-
-      // Verify agent span was created
       expect(agent.traceSpan).toBeDefined()
     })
   })
 
   describe('Span Attributes Verification', () => {
+    beforeEach(() => {
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('verifies model ID is captured in model span', async () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const { result } = await collectGenerator(agent.stream('Say hello'))
 
       expect(result).toBeDefined()
-
-      // Verify trace span was created
       expect(agent.traceSpan).toBeDefined()
     })
 
@@ -191,9 +180,6 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const { result } = await collectGenerator(
@@ -201,8 +187,6 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
       )
 
       expect(result).toBeDefined()
-
-      // Verify trace span was created
       expect(agent.traceSpan).toBeDefined()
     })
 
@@ -210,35 +194,34 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const { result } = await collectGenerator(agent.stream('Say hello'))
 
       expect(result).toBeDefined()
-
-      // Verify trace span was created
       expect(agent.traceSpan).toBeDefined()
     })
   })
 
   describe('Token Usage and Metrics Verification', () => {
+    beforeEach(() => {
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('captures token usage in model spans', async () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const { result } = await collectGenerator(agent.stream('Say hello'))
 
       expect(result).toBeDefined()
-
-      // Verify trace span was created
       expect(agent.traceSpan).toBeDefined()
     })
 
@@ -246,28 +229,29 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const { result } = await collectGenerator(agent.stream('Say hello'))
 
       expect(result).toBeDefined()
-
-      // Verify trace span was created
       expect(agent.traceSpan).toBeDefined()
     })
   })
 
   describe('Stop Reason Verification', () => {
+    beforeEach(() => {
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('captures stop reason in agent result', async () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const { result } = await collectGenerator(agent.stream('Say hello'))
@@ -279,25 +263,27 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
   })
 
   describe('Error Handling with Telemetry', () => {
+    beforeEach(() => {
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('handles tool errors gracefully with telemetry', async () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
         tools: [errorTool],
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
-      // Invoke agent with tool that errors
       const { result } = await collectGenerator(
         agent.stream('Use the error_tool')
       )
 
-      // Agent should still complete
       expect(result).toBeDefined()
-
-      // Verify trace span was created
       expect(agent.traceSpan).toBeDefined()
     })
 
@@ -305,40 +291,36 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
-      // Invoke agent - should not crash even if serialization has issues
       const { result } = await collectGenerator(agent.stream('Say hello'))
 
       expect(result).toBeDefined()
-
-      // Verify trace span was created
       expect(agent.traceSpan).toBeDefined()
     })
   })
 
   describe('Concurrent Invocations with Telemetry', () => {
+    beforeEach(() => {
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('handles multiple concurrent agents with separate traces', async () => {
       const agent1 = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const agent2 = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
-      // Run both agents concurrently
       const [result1, result2] = await Promise.all([
         (async () => {
           const { result } = await collectGenerator(agent1.stream('Say hello from agent 1'))
@@ -352,8 +334,6 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
 
       expect(result1).toBeDefined()
       expect(result2).toBeDefined()
-
-      // Verify both agents created trace spans
       expect(agent1.traceSpan).toBeDefined()
       expect(agent2.traceSpan).toBeDefined()
     })
@@ -363,42 +343,30 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const agent2 = new Agent({
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const agent3 = new Agent({
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
-      // Invoke agents concurrently
       const results = await Promise.all([
         collectGenerator(agent.stream('Use the test_tool with input "hello1"')),
         collectGenerator(agent2.stream('Use the test_tool with input "hello2"')),
         collectGenerator(agent3.stream('Use the test_tool with input "hello3"')),
       ])
 
-      // All should complete successfully
       for (const { result } of results) {
         expect(result).toBeDefined()
       }
 
-      // Verify all agents created trace spans
       expect(agent.traceSpan).toBeDefined()
       expect(agent2.traceSpan).toBeDefined()
       expect(agent3.traceSpan).toBeDefined()
@@ -406,24 +374,13 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
   })
 
   describe('Telemetry Disabled Verification', () => {
-    it('does not create spans when telemetry is disabled', async () => {
-      const agent = new Agent({
-        model: bedrock.createModel(),
-        printer: false,
-        telemetryConfig: {
-          enabled: false,
-        },
-      })
-
-      const { result } = await collectGenerator(agent.stream('Say hello'))
-
-      expect(result).toBeDefined()
-
-      // Trace span should be undefined
-      expect(agent.traceSpan).toBeUndefined()
+    beforeEach(() => {
+      // Ensure telemetry is disabled by resetting global state
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
     })
 
-    it('does not create spans when telemetry config is not provided', async () => {
+    it('does not create spans when StrandsTelemetry is not instantiated', async () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
@@ -432,21 +389,23 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
       const { result } = await collectGenerator(agent.stream('Say hello'))
 
       expect(result).toBeDefined()
-
-      // Trace span should be undefined
       expect(agent.traceSpan).toBeUndefined()
     })
   })
 
   describe('Cycle Spans Configuration', () => {
+    afterEach(() => {
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('creates cycle spans by default (enableCycleSpans: true)', async () => {
+      new StrandsTelemetry({ enableCycleSpans: true })
+
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const { result } = await collectGenerator(
@@ -454,20 +413,16 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
       )
 
       expect(result).toBeDefined()
-
-      // Verify agent span was created
       expect(agent.traceSpan).toBeDefined()
     })
 
     it('creates flat hierarchy when enableCycleSpans is false', async () => {
+      new StrandsTelemetry({ enableCycleSpans: false })
+
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-          enableCycleSpans: false,
-        },
       })
 
       const { result } = await collectGenerator(
@@ -475,62 +430,50 @@ describe.skipIf(bedrock.skip)('Comprehensive End-to-End Telemetry Tests', () => 
       )
 
       expect(result).toBeDefined()
-
-      // Verify agent span was created
       expect(agent.traceSpan).toBeDefined()
     })
 
     it('handles multiple model calls with enableCycleSpans: false', async () => {
+      new StrandsTelemetry({ enableCycleSpans: false })
+
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-          enableCycleSpans: false,
-        },
       })
 
-      // First invocation
       const { result: result1 } = await collectGenerator(
         agent.stream('Use the test_tool with input "hello"')
       )
       expect(result1).toBeDefined()
 
-      // Second invocation
       const { result: result2 } = await collectGenerator(
         agent.stream('Use the test_tool with input "world"')
       )
       expect(result2).toBeDefined()
 
-      // Verify agent span was created
       expect(agent.traceSpan).toBeDefined()
     })
 
     it('handles multiple model calls with enableCycleSpans: true', async () => {
+      new StrandsTelemetry({ enableCycleSpans: true })
+
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-          enableCycleSpans: true,
-        },
       })
 
-      // First invocation
       const { result: result1 } = await collectGenerator(
         agent.stream('Use the test_tool with input "hello"')
       )
       expect(result1).toBeDefined()
 
-      // Second invocation
       const { result: result2 } = await collectGenerator(
         agent.stream('Use the test_tool with input "world"')
       )
       expect(result2).toBeDefined()
 
-      // Verify agent span was created
       expect(agent.traceSpan).toBeDefined()
     })
   })

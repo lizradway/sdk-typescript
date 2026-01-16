@@ -5,47 +5,6 @@
 import type { Span, SpanStatusCode } from '@opentelemetry/api'
 
 /**
- * Telemetry configuration options.
- */
-export interface TelemetryConfig {
-  /**
-   * Enable telemetry collection.
-   * Defaults to true if OTEL_EXPORTER_OTLP_ENDPOINT is set.
-   */
-  enabled?: boolean
-
-  /**
-   * Enable cycle spans in the trace hierarchy.
-   * When true (default), traces include cycle spans that group model calls and tool executions.
-   * When false, model and tool spans are direct children of the agent span (flat hierarchy).
-   *
-   * With cycle spans (default):
-   * ```
-   * Agent Span
-   * ├── Cycle Span (cycle-1)
-   * │   ├── Model Span (chat)
-   * │   └── Tool Span (execute_tool)
-   * └── Cycle Span (cycle-2)
-   *     └── Model Span (chat)
-   * ```
-   *
-   * Without cycle spans:
-   * ```
-   * Agent Span
-   * ├── Model Span (chat)
-   * ├── Tool Span (execute_tool)
-   * └── Model Span (chat)
-   * ```
-   */
-  enableCycleSpans?: boolean
-
-  /**
-   * Custom trace attributes to include in all spans.
-   */
-  customTraceAttributes?: Record<string, AttributeValue>
-}
-
-/**
  * OpenTelemetry attribute value types.
  * Must match OpenTelemetry API's AttributeValue type.
  */
@@ -58,21 +17,50 @@ export type AttributeValue =
   | Array<null | undefined | boolean>
 
 /**
- * Usage information from model calls.
+ * Token usage statistics for a model invocation.
+ * Tracks input, output, and total tokens, plus cache-related metrics.
  */
 export interface Usage {
+  /**
+   * Number of tokens in the input (prompt).
+   */
   inputTokens: number
+
+  /**
+   * Number of tokens in the output (completion).
+   */
   outputTokens: number
+
+  /**
+   * Total number of tokens (input + output).
+   */
   totalTokens: number
+
+  /**
+   * Number of input tokens read from cache.
+   * This can reduce latency and cost.
+   */
   cacheReadInputTokens?: number
+
+  /**
+   * Number of input tokens written to cache.
+   * These tokens can be reused in future requests.
+   */
   cacheWriteInputTokens?: number
 }
 
 /**
- * Metrics from model calls.
+ * Performance metrics for a model invocation.
  */
 export interface Metrics {
+  /**
+   * Time to first byte/token in milliseconds.
+   */
   timeToFirstByteMs?: number
+
+  /**
+   * Total latency in milliseconds.
+   */
   latencyMs?: number
 }
 
@@ -163,3 +151,49 @@ export interface OtelPart {
  * Span wrapper for telemetry operations.
  */
 export type TracerSpan = Span | null
+
+/**
+ * Options for configuring the OTLP exporter.
+ */
+export interface OtlpExporterOptions {
+  /**
+   * The OTLP endpoint URL (e.g., http://localhost:4317).
+   * Falls back to OTEL_EXPORTER_OTLP_ENDPOINT environment variable if not provided.
+   */
+  endpoint?: string
+
+  /**
+   * Headers to include in OTLP requests (e.g., Authorization).
+   * Falls back to OTEL_EXPORTER_OTLP_HEADERS environment variable if not provided.
+   */
+  headers?: Record<string, string>
+}
+
+/**
+ * Options for configuring the meter (metrics).
+ */
+export interface MeterOptions {
+  /**
+   * Enable console metrics exporter for debugging.
+   * Defaults to false.
+   */
+  console?: boolean
+
+  /**
+   * Enable OTLP metrics exporter.
+   * Defaults to false.
+   */
+  otlp?: boolean
+
+  /**
+   * The OTLP endpoint URL for metrics.
+   * Falls back to OTEL_EXPORTER_OTLP_ENDPOINT environment variable if not provided.
+   */
+  endpoint?: string
+
+  /**
+   * Headers to include in OTLP metrics requests.
+   * Falls back to OTEL_EXPORTER_OTLP_HEADERS environment variable if not provided.
+   */
+  headers?: Record<string, string>
+}

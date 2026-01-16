@@ -19,7 +19,7 @@ describe('fileEditor tool', () => {
         toolUseId: 'test-id',
         input: {},
       },
-      agent: { state: agentState, messages: [] },
+      agent: { state: agentState, messages: [], name: 'test-agent', agentId: 'test-agent-id', model: {} as any, tools: [] },
     }
     return { state: agentState, context: toolContext }
   }

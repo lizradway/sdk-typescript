@@ -57,6 +57,11 @@ export interface AgentData {
    * The system prompt configured for the agent.
    */
   systemPrompt?: SystemPrompt
+
+  /**
+   * Custom trace attributes to include in telemetry spans.
+   */
+  customTraceAttributes?: Record<string, unknown> | undefined
 }
 
 /**

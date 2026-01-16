@@ -53,12 +53,6 @@ export interface BaseModelConfig {
    * @see Provider-specific documentation for details
    */
   topP?: number
-
-  /**
-   * Telemetry configuration for OpenTelemetry tracing.
-   * When provided, enables automatic tracing of model invocations.
-   */
-  telemetryConfig?: import('../telemetry/types.js').TelemetryConfig
 }
 
 /**

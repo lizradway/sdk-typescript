@@ -72,15 +72,22 @@ describe('MCP Instrumentation', () => {
       // Create a real tracer and span
       const tracer = trace.getTracer('test-tracer')
 
-      // Mock the SDK client's callTool to capture arguments
+      // Mock the SDK client's callToolStream to capture arguments
       let capturedArgs: any
       const mockSdkClient = {
         connect: vi.fn().mockResolvedValue(undefined),
         close: vi.fn().mockResolvedValue(undefined),
-        callTool: vi.fn().mockImplementation((args) => {
-          capturedArgs = args
-          return Promise.resolve({ content: [{ type: 'text', text: 'result' }] })
-        }),
+        experimental: {
+          tasks: {
+            callToolStream: vi.fn().mockImplementation((args) => {
+              capturedArgs = args
+              // Return an async generator that yields a result
+              return (async function* () {
+                yield { type: 'result', result: { content: [{ type: 'text', text: 'result' }] } }
+              })()
+            }),
+          },
+        },
       }
 
       // Replace the internal client
@@ -112,15 +119,21 @@ describe('MCP Instrumentation', () => {
     })
 
     it('should not inject context when no active span exists', async () => {
-      // Mock the SDK client's callTool to capture arguments
+      // Mock the SDK client's callToolStream to capture arguments
       let capturedArgs: any
       const mockSdkClient = {
         connect: vi.fn().mockResolvedValue(undefined),
         close: vi.fn().mockResolvedValue(undefined),
-        callTool: vi.fn().mockImplementation((args) => {
-          capturedArgs = args
-          return Promise.resolve({ content: [{ type: 'text', text: 'result' }] })
-        }),
+        experimental: {
+          tasks: {
+            callToolStream: vi.fn().mockImplementation((args) => {
+              capturedArgs = args
+              return (async function* () {
+                yield { type: 'result', result: { content: [{ type: 'text', text: 'result' }] } }
+              })()
+            }),
+          },
+        },
       }
 
       // Replace the internal client
@@ -148,10 +161,16 @@ describe('MCP Instrumentation', () => {
       const mockSdkClient = {
         connect: vi.fn().mockResolvedValue(undefined),
         close: vi.fn().mockResolvedValue(undefined),
-        callTool: vi.fn().mockImplementation((args) => {
-          capturedArgs = args
-          return Promise.resolve({ content: [{ type: 'text', text: 'result' }] })
-        }),
+        experimental: {
+          tasks: {
+            callToolStream: vi.fn().mockImplementation((args) => {
+              capturedArgs = args
+              return (async function* () {
+                yield { type: 'result', result: { content: [{ type: 'text', text: 'result' }] } }
+              })()
+            }),
+          },
+        },
       }
 
       ;(mcpClient as any)._client = mockSdkClient
@@ -183,10 +202,16 @@ describe('MCP Instrumentation', () => {
       const mockSdkClient = {
         connect: vi.fn().mockResolvedValue(undefined),
         close: vi.fn().mockResolvedValue(undefined),
-        callTool: vi.fn().mockImplementation((args) => {
-          capturedArgs = args
-          return Promise.resolve({ content: [{ type: 'text', text: 'result' }] })
-        }),
+        experimental: {
+          tasks: {
+            callToolStream: vi.fn().mockImplementation((args) => {
+              capturedArgs = args
+              return (async function* () {
+                yield { type: 'result', result: { content: [{ type: 'text', text: 'result' }] } }
+              })()
+            }),
+          },
+        },
       }
 
       ;(mcpClient as any)._client = mockSdkClient
@@ -220,7 +245,16 @@ describe('MCP Instrumentation', () => {
       const mockSdkClient = {
         connect: vi.fn().mockResolvedValue(undefined),
         close: vi.fn().mockResolvedValue(undefined),
-        callTool: vi.fn().mockRejectedValue(new Error('Tool execution failed')),
+        experimental: {
+          tasks: {
+            callToolStream: vi.fn().mockImplementation(() => {
+              // eslint-disable-next-line require-yield
+              return (async function* () {
+                throw new Error('Tool execution failed')
+              })()
+            }),
+          },
+        },
       }
 
       ;(mcpClient as any)._client = mockSdkClient
@@ -264,10 +298,14 @@ describe('MCP Instrumentation', () => {
       const mockSdkClient = {
         connect: vi.fn().mockResolvedValue(undefined),
         close: vi.fn().mockResolvedValue(undefined),
-        callTool: vi.fn().mockImplementation(() => {
-          // This will throw an error in the actual implementation
-          throw new Error('MCP Protocol Error: Tool arguments must be a JSON Object (named parameters). Received: Array')
-        }),
+        experimental: {
+          tasks: {
+            callToolStream: vi.fn().mockImplementation(() => {
+              // This will throw an error in the actual implementation
+              throw new Error('MCP Protocol Error: Tool arguments must be a JSON Object (named parameters). Received: Array')
+            }),
+          },
+        },
       }
 
       ;(mcpClient as any)._client = mockSdkClient
@@ -293,10 +331,16 @@ describe('MCP Instrumentation', () => {
       const mockSdkClient = {
         connect: vi.fn().mockResolvedValue(undefined),
         close: vi.fn().mockResolvedValue(undefined),
-        callTool: vi.fn().mockImplementation((args) => {
-          capturedArgs = args
-          return Promise.resolve({ content: [{ type: 'text', text: 'result' }] })
-        }),
+        experimental: {
+          tasks: {
+            callToolStream: vi.fn().mockImplementation((args) => {
+              capturedArgs = args
+              return (async function* () {
+                yield { type: 'result', result: { content: [{ type: 'text', text: 'result' }] } }
+              })()
+            }),
+          },
+        },
       }
 
       ;(mcpClient as any)._client = mockSdkClient

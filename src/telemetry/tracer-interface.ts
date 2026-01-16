@@ -5,19 +5,29 @@
  * custom tracing backends (Datadog, New Relic, custom solutions, etc.)
  * without needing to understand the hooks system.
  *
+ * The default Tracer implementation uses OpenTelemetry's startActiveSpan
+ * for automatic context propagation - child spans automatically parent
+ * to the current active span without manual tracking.
+ *
  * @example
  * ```typescript
  * import { ITracer, TracerHookAdapter, Agent } from '@strands-agents/sdk'
  *
  * class DatadogTracer implements ITracer {
- *   startAgentSpan(params) {
- *     return dd.startSpan('agent.invoke', { tags: params })
+ *   startSpan(event) {
+ *     switch (event.type) {
+ *       case 'beforeInvocationEvent':
+ *         return dd.startSpan('agent.invoke', { tags: { agent: event.agent.name } })
+ *       case 'beforeModelCallEvent':
+ *         return dd.startSpan('model.call')
+ *       case 'beforeToolCallEvent':
+ *         return dd.startSpan('tool.call', { tags: { tool: event.toolUse.name } })
+ *     }
  *   }
- *   endAgentSpan(span, params) {
- *     if (params.error) span.setError(params.error)
+ *   endSpan(span, event) {
+ *     if ('error' in event && event.error) span.setError(event.error)
  *     span.finish()
  *   }
- *   // ... implement other methods
  * }
  *
  * const agent = new Agent({
@@ -26,46 +36,50 @@
  * ```
  */
 
-import type { Message, ToolResultBlock } from '../types/messages.js'
-import type { Tool } from '../tools/tool.js'
-import type { JSONValue } from '../types/json.js'
+import type {
+  BeforeInvocationEvent,
+  AfterInvocationEvent,
+  BeforeModelCallEvent,
+  AfterModelCallEvent,
+  BeforeToolCallEvent,
+  AfterToolCallEvent,
+} from '../hooks/events.js'
+
 
 /**
  * Generic span type that tracers return.
  * Can be any object that the tracer implementation uses to track spans.
+ * For OpenTelemetry tracers using startActiveSpan, this includes both
+ * the span and its context for proper context propagation.
  */
 export type TracerSpanHandle = unknown
 
 /**
- * Parameters for starting an agent span.
+ * Union type for events that start a span.
  */
-export interface StartAgentSpanParams {
-  /** The name of the agent */
-  agentName: string
-  /** The unique identifier of the agent instance */
-  agentId: string
-  /** The model ID being used */
-  modelId: string
-  /** The input messages for this invocation */
-  inputMessages: Message[]
-  /** The tools available to the agent */
-  tools: Tool[]
-  /** The system prompt (if configured) */
-  systemPrompt?: unknown
+export type StartSpanEvent = BeforeInvocationEvent | BeforeModelCallEvent | BeforeToolCallEvent
+
+/**
+ * Union type for events that end a span.
+ */
+export type EndSpanEvent = AfterInvocationEvent | AfterModelCallEvent | AfterToolCallEvent
+
+/**
+ * Context passed to startSpan for additional information not in the event.
+ */
+export interface StartSpanContext {
+  /** Custom trace attributes (for agent spans) */
+  customTraceAttributes?: Record<string, unknown>
+  /** Cycle ID when this is a cycle span (internal use) */
+  cycleId?: string
 }
 
 /**
- * Parameters for ending an agent span.
+ * Context passed to endSpan for additional information not in the event.
  */
-export interface EndAgentSpanParams {
-  /** The final response message (if successful) */
-  response?: Message | undefined
-  /** The stop reason from the model */
-  stopReason?: string | undefined
-  /** Error that occurred during invocation (if any) */
-  error?: Error | undefined
-  /** Accumulated token usage across all model calls */
-  usage?: {
+export interface EndSpanContext {
+  /** Accumulated usage across all model calls (for agent spans) */
+  accumulatedUsage?: {
     inputTokens: number
     outputTokens: number
     totalTokens: number
@@ -74,90 +88,6 @@ export interface EndAgentSpanParams {
   }
 }
 
-/**
- * Parameters for starting a model span.
- */
-export interface StartModelSpanParams {
-  /** The model ID being called */
-  modelId: string
-  /** The messages being sent to the model */
-  messages: Message[]
-  /** Parent span handle (agent or cycle span) */
-  parentSpan?: TracerSpanHandle
-}
-
-/**
- * Parameters for ending a model span.
- */
-export interface EndModelSpanParams {
-  /** The response message from the model */
-  response?: Message | undefined
-  /** The stop reason from the model */
-  stopReason?: string | undefined
-  /** Error that occurred during model call (if any) */
-  error?: Error | undefined
-  /** Token usage from this model call */
-  usage?: {
-    inputTokens: number
-    outputTokens: number
-    totalTokens: number
-    cacheReadInputTokens?: number
-    cacheWriteInputTokens?: number
-  } | undefined
-  /** Performance metrics from this model call */
-  metrics?: {
-    timeToFirstByteMs?: number
-    latencyMs?: number
-  } | undefined
-}
-
-/**
- * Parameters for starting a tool span.
- */
-export interface StartToolSpanParams {
-  /** The name of the tool being called */
-  toolName: string
-  /** The unique ID for this tool use */
-  toolUseId: string
-  /** The input parameters for the tool */
-  input: JSONValue
-  /** Parent span handle (agent or cycle span) */
-  parentSpan?: TracerSpanHandle
-}
-
-/**
- * Parameters for ending a tool span.
- */
-export interface EndToolSpanParams {
-  /** The result from the tool execution */
-  result: ToolResultBlock
-  /** Error that occurred during tool execution (if any) */
-  error?: Error | undefined
-}
-
-/**
- * Parameters for starting a cycle span.
- */
-export interface StartCycleSpanParams {
-  /** The cycle identifier (e.g., "cycle-1") */
-  cycleId: string
-  /** The messages at the start of this cycle */
-  messages: Message[]
-  /** Parent span handle (agent span) */
-  parentSpan?: TracerSpanHandle
-}
-
-/**
- * Parameters for ending a cycle span.
- */
-export interface EndCycleSpanParams {
-  /** The assistant response message (if cycle ended with model response) */
-  response?: Message | undefined
-  /** The tool result message (if cycle ended with tool execution) */
-  toolResultMessage?: Message | undefined
-  /** Error that occurred during the cycle (if any) */
-  error?: Error | undefined
-}
 
 /**
  * Interface for custom tracer implementations.
@@ -166,81 +96,43 @@ export interface EndCycleSpanParams {
  * The TracerHookAdapter will wire your implementation to the agent's
  * hook system automatically.
  *
- * All methods are optional - implement only what you need.
- * Unimplemented methods will be no-ops.
+ * The default implementation uses OpenTelemetry's startActiveSpan for
+ * automatic context propagation. Child spans automatically parent to
+ * the current active span without manual tracking.
+ *
+ * IMPORTANT: If you implement startSpan, you MUST also implement endSpan.
+ * Failing to close spans will corrupt the trace structure and cause
+ * incorrect parent-child relationships. For OpenTelemetry implementations,
+ * consider using startActiveSpan which automatically manages span lifecycle.
  */
 export interface ITracer {
   /**
-   * Start a span for an agent invocation.
-   * Called at the beginning of agent.invoke() or agent.stream().
+   * Start a span based on a hook event.
+   * Uses event.type to determine span name and attributes.
    *
-   * @param params - Parameters including agent info, model ID, and input messages
-   * @returns A span handle to pass to endAgentSpan, or undefined to skip tracing
+   * For OpenTelemetry implementations, this should use startActiveSpan
+   * to set the span as the current span in context. Child spans will
+   * automatically parent to it.
+   *
+   * IMPORTANT: If you implement this method, you MUST also implement endSpan
+   * to properly close spans and maintain correct trace structure.
+   *
+   * @param event - The hook event that triggered span creation
+   * @param context - Additional context not available in the event
+   * @returns A span handle to pass to endSpan, or undefined to skip tracing
    */
-  startAgentSpan?(params: StartAgentSpanParams): TracerSpanHandle | undefined
+  startSpan?(event: StartSpanEvent, context?: StartSpanContext): TracerSpanHandle | undefined
 
   /**
-   * End an agent invocation span.
-   * Called when agent.invoke() or agent.stream() completes.
+   * End a span based on a hook event.
+   * Uses event.type to add final attributes and close the span.
    *
-   * @param span - The span handle returned by startAgentSpan
-   * @param params - Parameters including response, error, and usage
-   */
-  endAgentSpan?(span: TracerSpanHandle, params: EndAgentSpanParams): void
-
-  /**
-   * Start a span for a model call.
-   * Called before each call to the model provider.
+   * IMPORTANT: This method MUST be implemented if startSpan is implemented.
+   * Failing to close spans will corrupt the trace structure.
    *
-   * @param params - Parameters including model ID and messages
-   * @returns A span handle to pass to endModelSpan, or undefined to skip tracing
+   * @param span - The span handle returned by startSpan
+   * @param event - The hook event that triggered span completion
+   * @param context - Additional context not available in the event
    */
-  startModelSpan?(params: StartModelSpanParams): TracerSpanHandle | undefined
-
-  /**
-   * End a model call span.
-   * Called after the model provider returns.
-   *
-   * @param span - The span handle returned by startModelSpan
-   * @param params - Parameters including response, error, and usage
-   */
-  endModelSpan?(span: TracerSpanHandle, params: EndModelSpanParams): void
-
-  /**
-   * Start a span for a tool execution.
-   * Called before each tool is executed.
-   *
-   * @param params - Parameters including tool name, ID, and input
-   * @returns A span handle to pass to endToolSpan, or undefined to skip tracing
-   */
-  startToolSpan?(params: StartToolSpanParams): TracerSpanHandle | undefined
-
-  /**
-   * End a tool execution span.
-   * Called after tool execution completes.
-   *
-   * @param span - The span handle returned by startToolSpan
-   * @param params - Parameters including result and error
-   */
-  endToolSpan?(span: TracerSpanHandle, params: EndToolSpanParams): void
-
-  /**
-   * Start a span for an event loop cycle.
-   * Called at the start of each agent loop iteration.
-   * Only called if cycle spans are enabled.
-   *
-   * @param params - Parameters including cycle ID and messages
-   * @returns A span handle to pass to endCycleSpan, or undefined to skip tracing
-   */
-  startCycleSpan?(params: StartCycleSpanParams): TracerSpanHandle | undefined
-
-  /**
-   * End an event loop cycle span.
-   * Called when a cycle completes (either with model response or after tools).
-   * Only called if cycle spans are enabled.
-   *
-   * @param span - The span handle returned by startCycleSpan
-   * @param params - Parameters including response and error
-   */
-  endCycleSpan?(span: TracerSpanHandle, params: EndCycleSpanParams): void
+  endSpan?(span: TracerSpanHandle, event: EndSpanEvent, context?: EndSpanContext): void
 }

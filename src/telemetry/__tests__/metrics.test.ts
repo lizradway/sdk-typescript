@@ -48,7 +48,7 @@ describe('Trace', () => {
     it('creates a trace with all optional parameters', () => {
       const startTime = 1000
       const metadata = { key: 'value' }
-      const message = { role: 'user', content: [] } as Message
+      const message = { role: 'user', content: [], type: 'message' } as unknown as Message
 
       const trace = new Trace('test-trace', 'parent-id', startTime, 'raw-name', metadata, message)
 
@@ -123,7 +123,7 @@ describe('Trace', () => {
   describe('addMessage', () => {
     it('adds a message to the trace', () => {
       const trace = new Trace('test-trace')
-      const message = { role: 'assistant', content: [] } as Message
+      const message = { role: 'assistant', content: [], type: 'message' } as unknown as Message
 
       trace.addMessage(message)
 
@@ -162,7 +162,7 @@ describe('Trace', () => {
       const dict = parent.toDict()
 
       expect(dict.children).toHaveLength(1)
-      expect((dict.children as Record<string, unknown>[])[0].name).toBe('child')
+      expect((dict.children as Record<string, unknown>[])[0]!.name).toBe('child')
     })
   })
 })
@@ -302,7 +302,7 @@ describe('EventLoopMetrics', () => {
       metrics.startCycle({ event_loop_cycle_id: 'cycle-1' })
 
       expect(metrics.latestAgentInvocation?.cycles).toHaveLength(1)
-      expect(metrics.latestAgentInvocation?.cycles[0].eventLoopCycleId).toBe('cycle-1')
+      expect(metrics.latestAgentInvocation?.cycles[0]!.eventLoopCycleId).toBe('cycle-1')
     })
   })
 
@@ -321,7 +321,7 @@ describe('EventLoopMetrics', () => {
     it('adds message to trace if provided', () => {
       metrics.resetUsageMetrics()
       const { startTime, cycleTrace } = metrics.startCycle({ event_loop_cycle_id: 'cycle-1' })
-      const message = { role: 'assistant', content: [] } as Message
+      const message = { role: 'assistant', content: [], type: 'message' } as unknown as Message
 
       metrics.endCycle(startTime, cycleTrace, {}, message)
 
@@ -337,7 +337,7 @@ describe('EventLoopMetrics', () => {
         input: {},
       }
       const toolTrace = new Trace('tool-trace')
-      const message = { role: 'user', content: [] } as Message
+      const message = { role: 'user', content: [], type: 'message' } as unknown as Message
 
       metrics.addToolUsage(tool, 1.5, toolTrace, true, message)
 
@@ -354,7 +354,7 @@ describe('EventLoopMetrics', () => {
         input: {},
       }
       const toolTrace = new Trace('tool-trace')
-      const message = { role: 'user', content: [] } as Message
+      const message = { role: 'user', content: [], type: 'message' } as unknown as Message
 
       metrics.addToolUsage(tool, 1.0, toolTrace, false, message)
 
@@ -447,7 +447,7 @@ describe('EventLoopMetrics', () => {
     it('includes tool usage in summary', () => {
       const tool: ToolUse = { name: 'test-tool', toolUseId: 'tool-123', input: {} }
       const toolTrace = new Trace('tool-trace')
-      const message = { role: 'user', content: [] } as Message
+      const message = { role: 'user', content: [], type: 'message' } as unknown as Message
 
       metrics.addToolUsage(tool, 1.5, toolTrace, true, message)
 
@@ -530,7 +530,7 @@ describe('metricsToString', () => {
     const metrics = new EventLoopMetrics()
     const tool: ToolUse = { name: 'calculator', toolUseId: 'calc-123', input: {} }
     const toolTrace = new Trace('tool-trace')
-    const message = { role: 'user', content: [] } as Message
+    const message = { role: 'user', content: [], type: 'message' } as unknown as Message
 
     metrics.addToolUsage(tool, 1.5, toolTrace, true, message)
 

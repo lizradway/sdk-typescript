@@ -3,32 +3,50 @@
  *
  * This module provides tracing capabilities using OpenTelemetry,
  * enabling trace data to be sent to OTLP endpoints.
+ *
+ * Uses startActiveSpan for automatic context propagation - child spans
+ * automatically parent to the current active span without manual tracking.
  */
 
 import { context, SpanStatusCode, SpanKind, trace } from '@opentelemetry/api'
-import type { Span, Tracer as OtelTracer } from '@opentelemetry/api'
+import type { Span, Tracer as OtelTracer, Context } from '@opentelemetry/api'
 import type { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'
 import { logger } from '../logging/index.js'
 import { initializeTracerProvider } from './config.js'
-import type {
-  TelemetryConfig,
-  AttributeValue,
-  Usage,
-  Metrics,
-  ToolUse,
-  ToolResult,
-  TracerSpan,
-} from './types.js'
+import type { AttributeValue, Usage, Metrics } from './types.js'
 import type { Message } from '../types/messages.js'
+import type {
+  BeforeInvocationEvent,
+  AfterInvocationEvent,
+  BeforeModelCallEvent,
+  AfterModelCallEvent,
+  BeforeToolCallEvent,
+  AfterToolCallEvent,
+} from '../hooks/events.js'
+import type {
+  ITracer,
+  TracerSpanHandle,
+  StartSpanEvent,
+  EndSpanEvent,
+  StartSpanContext,
+  EndSpanContext,
+} from './tracer-interface.js'
+import { getModelId } from './utils.js'
+
+/**
+ * Handle returned by startSpan that includes both the span and its context.
+ * This allows proper context propagation when ending spans.
+ */
+export interface ActiveSpanHandle {
+  span: Span
+  context: Context
+}
+
 
 /**
  * Custom JSON encoder that handles non-serializable types.
  */
 class JSONEncoder {
-  /**
-   * Recursively encode objects, preserving structure and only replacing unserializable values.
-   * Uses a local WeakSet per encode call to track circular references without memory buildup.
-   */
   encode(obj: unknown): string {
     try {
       const seen = new WeakSet<object>()
@@ -41,40 +59,15 @@ class JSONEncoder {
     }
   }
 
-  /**
-   * Process any value, handling containers recursively.
-   * Limits recursion depth to prevent stack overflow and memory issues.
-   */
   private _processValue(value: unknown, seen: WeakSet<object>, depth: number): unknown {
-    // Limit recursion depth to prevent memory issues
-    if (depth > 50) {
-      return '<max depth reached>'
-    }
-
-    if (value === null) {
-      return null
-    }
-
-    if (value === undefined) {
-      return undefined
-    }
-
-    if (value instanceof Date) {
-      return value.toISOString()
-    }
-
-    if (value instanceof Error) {
-      return {
-        name: value.name,
-        message: value.message,
-        stack: value.stack,
-      }
-    }
+    if (depth > 50) return '<max depth reached>'
+    if (value === null) return null
+    if (value === undefined) return undefined
+    if (value instanceof Date) return value.toISOString()
+    if (value instanceof Error) return { name: value.name, message: value.message, stack: value.stack }
 
     if (value instanceof Map) {
-      if (seen.has(value)) {
-        return '<replaced>'
-      }
+      if (seen.has(value)) return '<replaced>'
       seen.add(value)
       return {
         __type__: 'Map',
@@ -86,54 +79,23 @@ class JSONEncoder {
     }
 
     if (value instanceof Set) {
-      if (seen.has(value)) {
-        return '<replaced>'
-      }
+      if (seen.has(value)) return '<replaced>'
       seen.add(value)
-      return {
-        __type__: 'Set',
-        value: Array.from(value).map((item) => this._processValue(item, seen, depth + 1)),
-      }
+      return { __type__: 'Set', value: Array.from(value).map((item) => this._processValue(item, seen, depth + 1)) }
     }
 
-    if (value instanceof RegExp) {
-      return {
-        __type__: 'RegExp',
-        source: value.source,
-        flags: value.flags,
-      }
-    }
-
-    if (typeof value === 'bigint') {
-      return {
-        __type__: 'BigInt',
-        value: value.toString(),
-      }
-    }
-
-    if (typeof value === 'symbol') {
-      return {
-        __type__: 'Symbol',
-        value: value.toString(),
-      }
-    }
-
+    if (value instanceof RegExp) return { __type__: 'RegExp', source: value.source, flags: value.flags }
+    if (typeof value === 'bigint') return { __type__: 'BigInt', value: value.toString() }
+    if (typeof value === 'symbol') return { __type__: 'Symbol', value: value.toString() }
     if (typeof value === 'function') {
-      return {
-        __type__: 'Function',
-        name: (value as unknown as Record<string, unknown>).name ?? 'anonymous',
-      }
+      return { __type__: 'Function', name: (value as unknown as Record<string, unknown>).name ?? 'anonymous' }
     }
+
 
     if (typeof value === 'object' && !Array.isArray(value)) {
-      if (seen.has(value as object)) {
-        return '<replaced>'
-      }
-
+      if (seen.has(value as object)) return '<replaced>'
       seen.add(value as object)
-
       const obj = value as Record<string, unknown>
-
       if (typeof obj.toJSON === 'function') {
         try {
           return this._processValue(obj.toJSON(), seen, depth + 1)
@@ -141,7 +103,6 @@ class JSONEncoder {
           logger.warn(`error=<${err}> | failed to call toJSON method`)
         }
       }
-
       if (typeof obj.toString === 'function' && obj.toString !== Object.prototype.toString) {
         try {
           return obj.toString()
@@ -149,7 +110,6 @@ class JSONEncoder {
           logger.warn(`error=<${err}> | failed to call toString method`)
         }
       }
-
       const processed: Record<string, unknown> = {}
       for (const [key, val] of Object.entries(obj)) {
         processed[key] = this._processValue(val, seen, depth + 1)
@@ -158,16 +118,12 @@ class JSONEncoder {
     }
 
     if (Array.isArray(value)) {
-      if (seen.has(value)) {
-        return '<replaced>'
-      }
+      if (seen.has(value)) return '<replaced>'
       seen.add(value)
       return value.map((item) => this._processValue(item, seen, depth + 1))
     }
 
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-      return value
-    }
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value
 
     try {
       JSON.stringify(value)
@@ -178,54 +134,44 @@ class JSONEncoder {
   }
 }
 
-// Global encoder instance
 const _encoder = new JSONEncoder()
+
 
 /**
  * Tracer manages OpenTelemetry spans for agent operations.
+ * Implements ITracer interface for use with TracerHookAdapter.
+ *
+ * Maintains a context stack to ensure proper parent-child relationships
+ * between spans across async boundaries.
  */
-export class Tracer {
+export class Tracer implements ITracer {
   private readonly _tracer: OtelTracer
   private readonly _tracerProvider: NodeTracerProvider
   private readonly _useLatestConventions: boolean
-  private readonly _includeToolDefinitions: boolean
-  private readonly _customTraceAttributes: Record<string, AttributeValue>
+  
+  // Context stack for proper span parenting across async boundaries
+  private _contextStack: Context[] = []
 
-  /**
-   * Initialize the tracer with OpenTelemetry configuration.
-   * Reads OTEL_SEMCONV_STABILITY_OPT_IN to determine convention version.
-   * Initializes the global tracer provider if not already done.
-   */
-  constructor(config?: TelemetryConfig) {
-    this._customTraceAttributes = config?.customTraceAttributes ?? {}
-
-    // Read semantic convention version from environment
+  constructor() {
     const optInValues = this._parseSemconvOptIn()
     this._useLatestConventions = optInValues.has('gen_ai_latest_experimental')
-    this._includeToolDefinitions = optInValues.has('gen_ai_tool_definitions')
 
-    // Log warning when using experimental conventions
     if (this._useLatestConventions) {
       logger.warn(
         'semconv=<gen_ai_latest_experimental> | using experimental GenAI semantic conventions | ' +
-        'these conventions are subject to change and may break in future releases'
+          'these conventions are subject to change and may break in future releases',
       )
       console.warn(
         '[OTEL] Warning: Using experimental GenAI semantic conventions (gen_ai_latest_experimental). ' +
-        'These conventions are subject to change and may require updates to your telemetry queries and dashboards.'
+          'These conventions are subject to change and may require updates to your telemetry queries and dashboards.',
       )
     }
 
-    // Initialize tracer provider and get tracer from it
     this._tracerProvider = initializeTracerProvider()
     this._tracer = this._tracerProvider.getTracer('strands-agents')
     logger.warn('tracer=<created> | tracer instance obtained from provider')
   }
 
-  /**
-   * Parse the OTEL_SEMCONV_STABILITY_OPT_IN environment variable.
-   * Splits on commas and trims whitespace from each value.
-   */
   private _parseSemconvOptIn(): Set<string> {
     const optInEnv = process.env.OTEL_SEMCONV_STABILITY_OPT_IN ?? ''
     return new Set(
@@ -235,303 +181,191 @@ export class Tracer {
         .filter((value) => value.length > 0),
     )
   }
+  
+  /**
+   * Get the current context for span creation.
+   * Uses the top of the context stack if available, otherwise the active context.
+   */
+  private _getCurrentContext(): Context {
+    return this._contextStack.length > 0 
+      ? this._contextStack[this._contextStack.length - 1]! 
+      : context.active()
+  }
+  
+  /**
+   * Push a new context onto the stack.
+   */
+  private _pushContext(ctx: Context): void {
+    this._contextStack.push(ctx)
+  }
+  
+  /**
+   * Pop a context from the stack.
+   */
+  private _popContext(): void {
+    this._contextStack.pop()
+  }
+
+
+  // ============================================================================
+  // ITracer Interface Methods
+  // ============================================================================
+
+  startSpan(event: StartSpanEvent, ctx?: StartSpanContext): TracerSpanHandle | undefined {
+    switch (event.type) {
+      case 'beforeInvocationEvent':
+        return this._startAgentSpan(event, ctx)
+      case 'beforeModelCallEvent':
+        return this._startModelSpan(event)
+      case 'beforeToolCallEvent':
+        return this._startToolSpan(event)
+      default:
+        logger.warn(`event_type=<${(event as { type: string }).type}> | unknown start span event type`)
+        return undefined
+    }
+  }
+
+  endSpan(handle: TracerSpanHandle, event: EndSpanEvent, ctx?: EndSpanContext): void {
+    if (!handle) return
+
+    const { span } = handle as ActiveSpanHandle
+
+    switch (event.type) {
+      case 'afterInvocationEvent':
+        this._endAgentSpan(span, event, ctx)
+        break
+      case 'afterModelCallEvent':
+        this._endModelSpan(span, event)
+        break
+      case 'afterToolCallEvent':
+        this._endToolSpan(span, event)
+        break
+      default:
+        logger.warn(`event_type=<${(event as { type: string }).type}> | unknown end span event type`)
+    }
+  }
+
+
+  // ============================================================================
+  // Internal Cycle Span Methods (used by TracerHookAdapter)
+  // ============================================================================
 
   /**
-   * Start an agent invocation span.
+   * Start a cycle span for internal use by TracerHookAdapter.
+   * Not part of the ITracer interface - cycle spans are managed internally.
+   * @internal
    */
-  startAgentSpan(
-    messages: Message[],
-    agentName: string,
-    _agentId?: string,
-    modelId?: string,
-    tools?: unknown[],
-    customTraceAttributes?: Record<string, AttributeValue>,
-    toolsConfig?: Record<string, unknown>,
-    systemPrompt?: unknown,
-  ): TracerSpan {
+  startCycleSpan(event: BeforeModelCallEvent, cycleId: string): ActiveSpanHandle | undefined {
     try {
+      const attributes: Record<string, AttributeValue> = { 'event_loop.cycle_id': cycleId }
+      const mergedAttributes = this._mergeAttributes(attributes)
+      const handle = this._createActiveSpan('execute_event_loop_cycle', mergedAttributes)
+
+      if (handle) {
+        this._addEventMessages(handle.span, event.agent.messages)
+      }
+
+      return handle
+    } catch (error) {
+      logger.warn(`error=<${error}> | failed to start cycle span`)
+      return undefined
+    }
+  }
+
+  /**
+   * End a cycle span for internal use by TracerHookAdapter.
+   * Not part of the ITracer interface - cycle spans are managed internally.
+   * @internal
+   */
+  endCycleSpan(handle: ActiveSpanHandle, event: AfterModelCallEvent | { type: 'afterToolsEvent'; message?: { content?: unknown[] } }): void {
+    if (!handle) return
+
+    try {
+      const { span } = handle
+      const attributes: Record<string, AttributeValue> = {}
+
+      if (event.type === 'afterModelCallEvent' && event.stopData?.message?.content) {
+        const response = event.stopData.message
+        if (this._useLatestConventions) {
+          this._addEvent(span, 'gen_ai.client.inference.operation.details', {
+            'gen_ai.output.messages': serialize([
+              { role: response.role || 'assistant', parts: mapContentBlocksToOtelParts(response.content as unknown[]) },
+            ]),
+          })
+        } else {
+          this._addEvent(span, 'gen_ai.assistant.message', { content: serialize(response.content) })
+        }
+      }
+
+      if (event.type === 'afterToolsEvent' && event.message?.content) {
+        if (this._useLatestConventions) {
+          this._addEvent(span, 'gen_ai.client.inference.operation.details', {
+            'gen_ai.output.messages': serialize([
+              { role: 'tool', parts: mapContentBlocksToOtelParts(event.message.content as unknown[]) },
+            ]),
+          })
+        } else {
+          this._addEvent(span, 'gen_ai.tool.message', { role: 'tool', content: serialize(event.message.content) })
+        }
+      }
+
+      this._closeSpan(span, attributes)
+    } catch (err) {
+      logger.warn(`error=<${err}> | failed to end cycle span`)
+    }
+  }
+
+
+  // ============================================================================
+  // Private Span Creation Methods
+  // ============================================================================
+
+  private _startAgentSpan(event: BeforeInvocationEvent, ctx?: StartSpanContext): ActiveSpanHandle | undefined {
+    try {
+      const agentName = event.agent.name
       const spanName = `invoke_agent ${agentName}`
       const attributes = this._getCommonAttributes('invoke_agent')
       attributes['gen_ai.agent.name'] = agentName
-      // Set 'name' attribute for Langfuse trace-level name
       attributes['name'] = spanName
 
+      const modelId = getModelId(event.agent)
       if (modelId) {
         attributes['gen_ai.request.model'] = modelId
       }
 
-      if (tools && tools.length > 0) {
-        attributes['gen_ai.agent.tools'] = serialize(tools)
+      if (event.agent.tools && event.agent.tools.length > 0) {
+        attributes['gen_ai.agent.tools'] = serialize(event.agent.tools)
       }
 
-      if (this._includeToolDefinitions && toolsConfig) {
+      if (event.agent.systemPrompt !== undefined) {
         try {
-          attributes['gen_ai.tool.definitions'] = serialize(toolsConfig)
-        } catch (error) {
-          logger.warn(`error=<${error}> | failed to serialize tool definitions`)
-        }
-      }
-
-      // Capture system prompt if provided
-      if (systemPrompt !== undefined) {
-        try {
-          attributes['system_prompt'] = serialize(systemPrompt)
+          attributes['system_prompt'] = serialize(event.agent.systemPrompt)
         } catch (error) {
           logger.warn(`error=<${error}> | failed to serialize system prompt`)
         }
       }
 
-      const mergedAttributes = this._mergeAttributes(attributes, customTraceAttributes)
-      const span = this._startSpan(spanName, undefined, mergedAttributes, SpanKind.INTERNAL)
+      const customAttrs = ctx?.customTraceAttributes ?? event.agent.customTraceAttributes
+      const mergedAttributes = this._mergeAttributes(attributes, customAttrs)
+      const handle = this._createActiveSpan(spanName, mergedAttributes, SpanKind.INTERNAL)
 
-      if (span) {
-        this._addEventMessages(span, messages)
+      if (handle) {
+        this._addEventMessages(handle.span, event.inputMessages)
       }
 
-      return span
+      return handle
     } catch (error) {
       logger.warn(`error=<${error}> | failed to start agent span`)
-      return null
+      return undefined
     }
   }
 
-  /**
-   * Add token usage to accumulated totals.
-   * Called after each model invocation to accumulate tokens across the agent loop.
-   */
-  accumulateTokenUsage(usage?: Usage): void {
-    if (!usage) return
-    // This method is called from agent.ts to accumulate token usage
-    // The actual accumulation happens in agent.ts, this is just a marker method
-  }
 
-  /**
-   * End an agent invocation span.
-   */
-  endAgentSpan(
-    span: TracerSpan,
-    response?: unknown,
-    error?: Error,
-    accumulatedUsage?: {
-      inputTokens: number
-      outputTokens: number
-      totalTokens: number
-      cacheReadInputTokens: number
-      cacheWriteInputTokens: number
-    },
-    stopReason?: string,
-  ): void {
-    if (!span) return
-
+  private _endAgentSpan(span: Span, event: AfterInvocationEvent, ctx?: EndSpanContext): void {
     try {
       const attributes: Record<string, AttributeValue> = {}
 
-      // Add accumulated token usage if provided
-      if (accumulatedUsage) {
-        attributes['gen_ai.usage.prompt_tokens'] = accumulatedUsage.inputTokens
-        attributes['gen_ai.usage.input_tokens'] = accumulatedUsage.inputTokens
-        attributes['gen_ai.usage.completion_tokens'] = accumulatedUsage.outputTokens
-        attributes['gen_ai.usage.output_tokens'] = accumulatedUsage.outputTokens
-        attributes['gen_ai.usage.total_tokens'] = accumulatedUsage.totalTokens
-
-        // Add cache token usage if available
-        if (accumulatedUsage.cacheReadInputTokens > 0) {
-          attributes['gen_ai.usage.cache_read_input_tokens'] = accumulatedUsage.cacheReadInputTokens
-        }
-        if (accumulatedUsage.cacheWriteInputTokens > 0) {
-          attributes['gen_ai.usage.cache_write_input_tokens'] = accumulatedUsage.cacheWriteInputTokens
-        }
-      }
-
-      // Add response as event (matching Python SDK pattern)
-      if (response !== undefined && response !== null) {
-        try {
-          // Extract text content from response for the message
-          let messageText = ''
-          const finishReason = stopReason || 'end_turn'
-          
-          if (typeof response === 'object') {
-            const respObj = response as Record<string, unknown>
-            // Check if it's a Message-like object with content
-            if ('content' in respObj && Array.isArray(respObj.content)) {
-              const textParts: string[] = []
-              for (const block of respObj.content) {
-                if (block && typeof block === 'object' && 'type' in block) {
-                  if (block.type === 'textBlock' && 'text' in block) {
-                    textParts.push(String(block.text))
-                  }
-                }
-              }
-              messageText = textParts.join('\n')
-            }
-          } else if (typeof response === 'string') {
-            messageText = response
-          }
-
-          if (this._useLatestConventions) {
-            this._addEvent(span, 'gen_ai.client.inference.operation.details', {
-              'gen_ai.output.messages': serialize([
-                {
-                  role: 'assistant',
-                  parts: [{ type: 'text', content: messageText }],
-                  finish_reason: finishReason,
-                },
-              ]),
-            })
-          } else {
-            this._addEvent(span, 'gen_ai.choice', {
-              message: messageText,
-              finish_reason: finishReason,
-            })
-          }
-        } catch (err) {
-          logger.warn(`error=<${err}> | failed to add response event to agent span`)
-        }
-      }
-
-      if (error) {
-        this._endSpan(span, attributes, error)
-      } else {
-        this._endSpan(span, attributes)
-      }
-    } catch (err) {
-      logger.warn(`error=<${err}> | failed to end agent span`)
-    }
-  }
-
-  /**
-   * End a span with error status (convenience method).
-   */
-  endSpanWithError(span: TracerSpan, errorMessage: string, exception?: Error): void {
-    if (!span) return
-
-    const error = exception || new Error(errorMessage)
-    this._endSpan(span, {}, error)
-  }
-
-  /**
-   * Add optional usage and metrics attributes if they have values.
-   */
-  private _addOptionalUsageAndMetricsAttributes(
-    attributes: Record<string, AttributeValue>,
-    usage: Usage,
-    metrics: Metrics,
-  ): void {
-    if (usage.cacheReadInputTokens !== undefined) {
-      attributes['gen_ai.usage.cache_read_input_tokens'] = usage.cacheReadInputTokens
-    }
-
-    if (usage.cacheWriteInputTokens !== undefined) {
-      attributes['gen_ai.usage.cache_write_input_tokens'] = usage.cacheWriteInputTokens
-    }
-
-    if (metrics.timeToFirstByteMs !== undefined && metrics.timeToFirstByteMs > 0) {
-      attributes['gen_ai.server.time_to_first_token'] = metrics.timeToFirstByteMs
-    }
-
-    if (metrics.latencyMs !== undefined && metrics.latencyMs > 0) {
-      attributes['gen_ai.server.request.duration'] = metrics.latencyMs
-    }
-  }
-
-  /**
-   * Start a model invocation span.
-   */
-  startModelInvokeSpan(
-    messages: Message[],
-    parentSpan?: TracerSpan,
-    modelId?: string,
-    customTraceAttributes?: Record<string, AttributeValue>,
-  ): TracerSpan {
-    try {
-      const attributes = this._getCommonAttributes('chat')
-
-      if (modelId) {
-        attributes['gen_ai.request.model'] = modelId
-      }
-
-      const mergedAttributes = this._mergeAttributes(attributes, customTraceAttributes)
-      const span = this._startSpan('chat', parentSpan ?? undefined, mergedAttributes, SpanKind.INTERNAL)
-
-      if (span) {
-        this._addEventMessages(span, messages)
-      }
-
-      return span
-    } catch (error) {
-      logger.warn(`error=<${error}> | failed to start model invoke span`)
-      return null
-    }
-  }
-
-  /**
-   * End a model invocation span.
-   */
-  endModelInvokeSpan(
-    span: TracerSpan,
-    _message?: Message,
-    usage?: Usage,
-    metrics?: Metrics,
-    _stopReason?: string,
-    error?: Error,
-    _input?: unknown,
-    output?: unknown,
-    outputStopReason?: string,
-  ): void {
-    if (!span) return
-
-    try {
-      // Add output as event (matching Python SDK pattern)
-      if (output !== undefined && output && typeof output === 'object' && 'content' in output && 'role' in output) {
-        const msgObj = output as Record<string, unknown>
-        if (this._useLatestConventions) {
-          this._addEvent(span, 'gen_ai.client.inference.operation.details', {
-            'gen_ai.output.messages': serialize([
-              {
-                role: msgObj.role,
-                parts: this._mapContentBlocksToOtelParts(msgObj.content as unknown[]),
-                finish_reason: outputStopReason || 'unknown',
-              },
-            ]),
-          })
-        } else {
-          // Format content blocks to match addInputOutput format (for Langfuse compatibility)
-          const contentBlocks: unknown[] = []
-          const content = msgObj.content
-          if (Array.isArray(content)) {
-            content.forEach((block: unknown) => {
-              if (block && typeof block === 'object') {
-                const blockObj = block as Record<string, unknown>
-                // Map content block types to simple format (matching addInputOutput)
-                if (blockObj.type === 'textBlock' && 'text' in blockObj) {
-                  contentBlocks.push({ text: blockObj.text })
-                } else if (blockObj.type === 'toolUseBlock') {
-                  contentBlocks.push({
-                    type: 'toolUse',
-                    name: blockObj.name,
-                    toolUseId: blockObj.toolUseId,
-                    input: blockObj.input,
-                  })
-                } else if (blockObj.type === 'toolResultBlock') {
-                  contentBlocks.push({
-                    type: 'toolResult',
-                    toolUseId: blockObj.toolUseId,
-                    content: blockObj.content,
-                  })
-                }
-              }
-            })
-          }
-          
-          this._addEvent(span, 'gen_ai.choice', {
-            finish_reason: outputStopReason || 'unknown',
-            message: serialize(contentBlocks),
-          })
-        }
-      }
-
-      const attributes: Record<string, AttributeValue> = {}
-
+      const usage = ctx?.accumulatedUsage ?? event.accumulatedUsage
       if (usage) {
         attributes['gen_ai.usage.prompt_tokens'] = usage.inputTokens
         attributes['gen_ai.usage.input_tokens'] = usage.inputTokens
@@ -539,225 +373,213 @@ export class Tracer {
         attributes['gen_ai.usage.output_tokens'] = usage.outputTokens
         attributes['gen_ai.usage.total_tokens'] = usage.totalTokens
 
-        if (metrics) {
-          this._addOptionalUsageAndMetricsAttributes(attributes, usage, metrics)
+        if (usage.cacheReadInputTokens !== undefined && usage.cacheReadInputTokens > 0) {
+          attributes['gen_ai.usage.cache_read_input_tokens'] = usage.cacheReadInputTokens
+        }
+        if (usage.cacheWriteInputTokens !== undefined && usage.cacheWriteInputTokens > 0) {
+          attributes['gen_ai.usage.cache_write_input_tokens'] = usage.cacheWriteInputTokens
         }
       }
 
-      if (error) {
-        this._endSpan(span, attributes, error)
-      } else {
-        this._endSpan(span, attributes)
+      if (event.result?.message) {
+        try {
+          let messageText = ''
+          const finishReason = event.result.stopReason || 'end_turn'
+          const response = event.result.message
+
+          if (typeof response === 'object' && 'content' in response && Array.isArray(response.content)) {
+            const textParts: string[] = []
+            for (const block of response.content) {
+              if (block && typeof block === 'object' && 'type' in block && block.type === 'textBlock' && 'text' in block) {
+                textParts.push(String(block.text))
+              }
+            }
+            messageText = textParts.join('\n')
+          }
+
+          if (this._useLatestConventions) {
+            this._addEvent(span, 'gen_ai.client.inference.operation.details', {
+              'gen_ai.output.messages': serialize([
+                { role: 'assistant', parts: [{ type: 'text', content: messageText }], finish_reason: finishReason },
+              ]),
+            })
+          } else {
+            this._addEvent(span, 'gen_ai.choice', { message: messageText, finish_reason: finishReason })
+          }
+        } catch (err) {
+          logger.warn(`error=<${err}> | failed to add response event to agent span`)
+        }
       }
+
+      this._closeSpan(span, attributes, event.error)
     } catch (err) {
-      logger.warn(`error=<${err}> | failed to end model invoke span`)
+      logger.warn(`error=<${err}> | failed to end agent span`)
     }
   }
 
-  /**
-   * Start a tool call span.
-   */
-  startToolCallSpan(
-    tool: ToolUse,
-    parentSpan?: TracerSpan,
-    customTraceAttributes?: Record<string, AttributeValue>,
-  ): TracerSpan {
+
+  private _startModelSpan(event: BeforeModelCallEvent): ActiveSpanHandle | undefined {
     try {
-      const attributes = this._getCommonAttributes('execute_tool')
-      attributes['gen_ai.tool.name'] = tool.name
-      attributes['gen_ai.tool.call.id'] = tool.toolUseId
+      const attributes = this._getCommonAttributes('chat')
 
-      const mergedAttributes = this._mergeAttributes(attributes, customTraceAttributes)
-      const span = this._startSpan(`execute_tool ${tool.name}`, parentSpan ?? undefined, mergedAttributes, SpanKind.INTERNAL)
+      const modelId = getModelId(event.agent)
+      if (modelId) {
+        attributes['gen_ai.request.model'] = modelId
+      }
 
-      if (span) {
+      const mergedAttributes = this._mergeAttributes(attributes)
+      const handle = this._createActiveSpan('chat', mergedAttributes, SpanKind.INTERNAL)
+
+      if (handle) {
+        this._addEventMessages(handle.span, event.agent.messages)
+      }
+
+      return handle
+    } catch (error) {
+      logger.warn(`error=<${error}> | failed to start model span`)
+      return undefined
+    }
+  }
+
+  private _endModelSpan(span: Span, event: AfterModelCallEvent): void {
+    try {
+      if (event.stopData?.message) {
+        const msgObj = event.stopData.message as unknown as Record<string, unknown>
         if (this._useLatestConventions) {
           this._addEvent(span, 'gen_ai.client.inference.operation.details', {
-            'gen_ai.input.messages': serialize([
+            'gen_ai.output.messages': serialize([
               {
-                role: 'tool',
-                parts: [
-                  {
-                    type: 'tool_call',
-                    name: tool.name,
-                    id: tool.toolUseId,
-                    arguments: tool.input,
-                  },
-                ],
+                role: msgObj.role,
+                parts: mapContentBlocksToOtelParts(msgObj.content as unknown[]),
+                finish_reason: event.stopData.stopReason || 'unknown',
               },
             ]),
           })
         } else {
-          this._addEvent(span, 'gen_ai.tool.message', {
-            role: 'tool',
-            content: serialize(tool.input),
-            id: tool.toolUseId,
-          })
+          const contentBlocks: unknown[] = []
+          const content = msgObj.content
+          if (Array.isArray(content)) {
+            content.forEach((block: unknown) => {
+              if (block && typeof block === 'object') {
+                const blockObj = block as Record<string, unknown>
+                if (blockObj.type === 'textBlock' && 'text' in blockObj) {
+                  contentBlocks.push({ text: blockObj.text })
+                } else if (blockObj.type === 'toolUseBlock') {
+                  contentBlocks.push({ type: 'toolUse', name: blockObj.name, toolUseId: blockObj.toolUseId, input: blockObj.input })
+                } else if (blockObj.type === 'toolResultBlock') {
+                  contentBlocks.push({ type: 'toolResult', toolUseId: blockObj.toolUseId, content: blockObj.content })
+                }
+              }
+            })
+          }
+          this._addEvent(span, 'gen_ai.choice', { finish_reason: event.stopData.stopReason || 'unknown', message: serialize(contentBlocks) })
         }
       }
 
-      return span
-    } catch (error) {
-      logger.warn(`error=<${error}> | failed to start tool call span`)
-      return null
+      const attributes: Record<string, AttributeValue> = {}
+
+      if (event.usage) {
+        attributes['gen_ai.usage.prompt_tokens'] = event.usage.inputTokens
+        attributes['gen_ai.usage.input_tokens'] = event.usage.inputTokens
+        attributes['gen_ai.usage.completion_tokens'] = event.usage.outputTokens
+        attributes['gen_ai.usage.output_tokens'] = event.usage.outputTokens
+        attributes['gen_ai.usage.total_tokens'] = event.usage.totalTokens
+
+        if (event.metrics) {
+          this._addOptionalUsageAndMetricsAttributes(attributes, event.usage, event.metrics)
+        }
+      }
+
+      this._closeSpan(span, attributes, event.error)
+    } catch (err) {
+      logger.warn(`error=<${err}> | failed to end model span`)
     }
   }
 
-  /**
-   * End a tool call span.
-   */
-  endToolCallSpan(span: TracerSpan, toolResult?: ToolResult, error?: Error): void {
-    if (!span) return
 
+  private _startToolSpan(event: BeforeToolCallEvent): ActiveSpanHandle | undefined {
+    try {
+      const attributes = this._getCommonAttributes('execute_tool')
+      attributes['gen_ai.tool.name'] = event.toolUse.name
+      attributes['gen_ai.tool.call.id'] = event.toolUse.toolUseId
+
+      const mergedAttributes = this._mergeAttributes(attributes)
+      const handle = this._createActiveSpan(`execute_tool ${event.toolUse.name}`, mergedAttributes, SpanKind.INTERNAL)
+
+      if (handle) {
+        if (this._useLatestConventions) {
+          this._addEvent(handle.span, 'gen_ai.client.inference.operation.details', {
+            'gen_ai.input.messages': serialize([
+              { role: 'tool', parts: [{ type: 'tool_call', name: event.toolUse.name, id: event.toolUse.toolUseId, arguments: event.toolUse.input }] },
+            ]),
+          })
+        } else {
+          this._addEvent(handle.span, 'gen_ai.tool.message', { role: 'tool', content: serialize(event.toolUse.input), id: event.toolUse.toolUseId })
+        }
+      }
+
+      return handle
+    } catch (error) {
+      logger.warn(`error=<${error}> | failed to start tool span`)
+      return undefined
+    }
+  }
+
+  private _endToolSpan(span: Span, event: AfterToolCallEvent): void {
     try {
       const attributes: Record<string, AttributeValue> = {}
 
-      if (toolResult) {
-        const status = toolResult.status
-        const statusStr = typeof status === 'string' ? status : String(status)
+      if (event.result) {
+        const statusStr = typeof event.result.status === 'string' ? event.result.status : String(event.result.status)
         attributes['gen_ai.tool.status'] = statusStr
 
         if (this._useLatestConventions) {
           this._addEvent(span, 'gen_ai.client.inference.operation.details', {
             'gen_ai.output.messages': serialize([
-              {
-                role: 'tool',
-                parts: [
-                  {
-                    type: 'tool_call_response',
-                    id: toolResult.toolUseId,
-                    response: toolResult.content,
-                  },
-                ],
-              },
+              { role: 'tool', parts: [{ type: 'tool_call_response', id: event.result.toolUseId, response: event.result.content }] },
             ]),
           })
         } else {
-          this._addEvent(span, 'gen_ai.choice', {
-            message: serialize(toolResult.content),
-            id: toolResult.toolUseId,
-          })
+          this._addEvent(span, 'gen_ai.choice', { message: serialize(event.result.content), id: event.result.toolUseId })
         }
       }
 
-      if (error) {
-        this._endSpan(span, attributes, error)
-      } else {
-        this._endSpan(span, attributes)
-      }
+      this._closeSpan(span, attributes, event.error)
     } catch (err) {
-      logger.warn(`error=<${err}> | failed to end tool call span`)
+      logger.warn(`error=<${err}> | failed to end tool span`)
+    }
+  }
+
+
+  // ============================================================================
+  // Private Helper Methods
+  // ============================================================================
+
+  private _addOptionalUsageAndMetricsAttributes(attributes: Record<string, AttributeValue>, usage: Usage, metrics: Metrics): void {
+    if (usage.cacheReadInputTokens !== undefined) {
+      attributes['gen_ai.usage.cache_read_input_tokens'] = usage.cacheReadInputTokens
+    }
+    if (usage.cacheWriteInputTokens !== undefined) {
+      attributes['gen_ai.usage.cache_write_input_tokens'] = usage.cacheWriteInputTokens
+    }
+    if (metrics.timeToFirstByteMs !== undefined && metrics.timeToFirstByteMs > 0) {
+      attributes['gen_ai.server.time_to_first_token'] = metrics.timeToFirstByteMs
+    }
+    if (metrics.latencyMs !== undefined && metrics.latencyMs > 0) {
+      attributes['gen_ai.server.request.duration'] = metrics.latencyMs
     }
   }
 
   /**
-   * Start an event loop cycle span.
+   * Create a span and set it as the current span in context.
+   * Child spans will automatically parent to this span.
+   * Returns both the span and its context for proper context management.
    */
-  startEventLoopCycleSpan(
-    cycleId: string,
-    messages: Message[],
-    parentSpan?: TracerSpan,
-    customTraceAttributes?: Record<string, AttributeValue>,
-  ): TracerSpan {
+  private _createActiveSpan(spanName: string, attributes?: Record<string, AttributeValue>, spanKind?: SpanKind): ActiveSpanHandle | undefined {
     try {
-      const attributes: Record<string, AttributeValue> = {
-        'event_loop.cycle_id': cycleId,
-      }
-
-      const mergedAttributes = this._mergeAttributes(attributes, customTraceAttributes)
-      const span = this._startSpan('execute_event_loop_cycle', parentSpan ?? undefined, mergedAttributes)
-
-      if (span) {
-        this._addEventMessages(span, messages)
-      }
-
-      return span
-    } catch (error) {
-      logger.warn(`error=<${error}> | failed to start event loop cycle span`)
-      return null
-    }
-  }
-
-  /**
-   * End an event loop cycle span.
-   */
-  endEventLoopCycleSpan(
-    span: TracerSpan,
-    message?: Message,
-    toolResultMessage?: Message,
-    error?: Error,
-  ): void {
-    if (!span) return
-
-    try {
-      const attributes: Record<string, AttributeValue> = {}
-
-      // Add assistant message output if provided (final response from model)
-      if (message && message.content) {
-        if (this._useLatestConventions) {
-          this._addEvent(span, 'gen_ai.client.inference.operation.details', {
-            'gen_ai.output.messages': serialize([
-              {
-                role: message.role || 'assistant',
-                parts: this._mapContentBlocksToOtelParts(message.content as unknown[]),
-              },
-            ]),
-          })
-        } else {
-          this._addEvent(span, 'gen_ai.assistant.message', {
-            content: serialize(message.content),
-          })
-        }
-      }
-
-      // Add tool result output if provided (tools completed)
-      if (toolResultMessage && toolResultMessage.content) {
-        if (this._useLatestConventions) {
-          this._addEvent(span, 'gen_ai.client.inference.operation.details', {
-            'gen_ai.output.messages': serialize([
-              {
-                role: 'tool',
-                parts: this._mapContentBlocksToOtelParts(toolResultMessage.content as unknown[]),
-              },
-            ]),
-          })
-        } else {
-          this._addEvent(span, 'gen_ai.tool.message', {
-            role: 'tool',
-            content: serialize(toolResultMessage.content),
-          })
-        }
-      }
-
-      if (error) {
-        this._endSpan(span, attributes, error)
-      } else {
-        this._endSpan(span, attributes)
-      }
-    } catch (err) {
-      logger.warn(`error=<${err}> | failed to end event loop cycle span`)
-    }
-  }
-
-  /**
-   * Start a span with the given name and attributes.
-   * Follows the Python SDK pattern: passes context as third parameter to startSpan().
-   */
-  private _startSpan(
-    spanName: string,
-    parentSpan?: Span,
-    attributes?: Record<string, AttributeValue>,
-    spanKind?: SpanKind,
-  ): Span | null {
-    try {
-      // Create span options
-      const options: {
-        attributes?: Record<string, AttributeValue | undefined>
-        kind?: SpanKind
-      } = {}
+      const options: { attributes?: Record<string, AttributeValue | undefined>; kind?: SpanKind } = {}
 
       if (attributes) {
-        // Filter out undefined/null values
         const otelAttributes: Record<string, AttributeValue | undefined> = {}
         for (const [key, value] of Object.entries(attributes)) {
           if (value !== undefined && value !== null) {
@@ -771,45 +593,39 @@ export class Tracer {
         options.kind = spanKind
       }
 
-      // Create the span with parent context if provided
-      // This matches the Python SDK pattern: trace_api.set_span_in_context(parent_span)
-      let spanContext: import('@opentelemetry/api').Context | undefined
-      if (parentSpan && parentSpan.isRecording()) {
-        spanContext = trace.setSpan(context.active(), parentSpan)
-      }
+      // Start span in the current context - it will parent to any active span
+      const parentContext = this._getCurrentContext()
+      const span = this._tracer.startSpan(spanName, options, parentContext)
 
-      // Pass context as third parameter to startSpan() - this is the key to trace ID inheritance
-      const span = this._tracer.startSpan(spanName, options, spanContext)
-
-      // Set start time
-      const startTime = new Date().toISOString()
       try {
-        span.setAttribute('gen_ai.event.start_time', startTime)
+        span.setAttribute('gen_ai.event.start_time', new Date().toISOString())
       } catch (err) {
         logger.warn(`error=<${err}> | failed to set start time attribute`)
       }
 
-      return span
+      // Create a new context with this span as the active span
+      const spanContext = trace.setSpan(parentContext, span)
+      
+      // Push this context onto the stack so child spans parent to it
+      this._pushContext(spanContext)
+
+      return {
+        span,
+        context: spanContext,
+      }
     } catch (error) {
       logger.warn(`error=<${error}> | failed to start span`)
-      return null
+      return undefined
     }
   }
 
-  /**
-   * End a span with the given attributes and optional error.
-   */
-  private _endSpan(span: Span, attributes?: Record<string, AttributeValue>, error?: Error): void {
-    try {
-      // Set end time
-      const endTime = new Date().toISOString()
-      const endAttributes: Record<string, AttributeValue> = {
-        'gen_ai.event.end_time': endTime,
-      }
 
-      if (attributes) {
-        Object.assign(endAttributes, attributes)
-      }
+  private _closeSpan(span: Span | null, attributes?: Record<string, AttributeValue>, error?: Error): void {
+    if (!span) return
+
+    try {
+      const endAttributes: Record<string, AttributeValue> = { 'gen_ai.event.end_time': new Date().toISOString() }
+      if (attributes) Object.assign(endAttributes, attributes)
 
       this._setAttributes(span, endAttributes)
 
@@ -821,21 +637,14 @@ export class Tracer {
       }
 
       span.end()
-
-      // Force flush to ensure spans are exported immediately (matching Python SDK)
-      try {
-        this._tracerProvider.forceFlush()
-      } catch (e) {
-        logger.warn(`error=<${e}> | failed to force flush tracer provider`)
-      }
+      
+      // Pop the context from the stack
+      this._popContext()
     } catch (err) {
       logger.warn(`error=<${err}> | failed to end span`)
     }
   }
 
-  /**
-   * Set attributes on a span.
-   */
   private _setAttributes(span: Span, attributes: Record<string, AttributeValue>): void {
     try {
       for (const [key, value] of Object.entries(attributes)) {
@@ -852,10 +661,8 @@ export class Tracer {
     }
   }
 
-  /**
-   * Add an event to a span.
-   */
-  private _addEvent(span: Span, eventName: string, eventAttributes?: Record<string, AttributeValue>): void {
+  private _addEvent(span: Span | null, eventName: string, eventAttributes?: Record<string, AttributeValue>): void {
+    if (!span) return
     try {
       if (eventAttributes) {
         const otelAttributes: Record<string, AttributeValue | undefined> = {}
@@ -873,26 +680,17 @@ export class Tracer {
     }
   }
 
-  /**
-   * Get common attributes based on semantic convention version.
-   */
-  private _getCommonAttributes(operationName: string): Record<string, AttributeValue> {
-    const attributes: Record<string, AttributeValue> = {
-      'gen_ai.operation.name': operationName,
-    }
 
+  private _getCommonAttributes(operationName: string): Record<string, AttributeValue> {
+    const attributes: Record<string, AttributeValue> = { 'gen_ai.operation.name': operationName }
     if (this._useLatestConventions) {
       attributes['gen_ai.provider.name'] = 'strands-agents'
     } else {
       attributes['gen_ai.system'] = 'strands-agents'
     }
-
     return attributes
   }
 
-  /**
-   * Add message events to a span.
-   */
   private _addEventMessages(span: Span, messages: Message[]): void {
     try {
       if (!Array.isArray(messages)) return
@@ -900,20 +698,13 @@ export class Tracer {
       if (this._useLatestConventions) {
         const inputMessages: unknown[] = []
         for (const message of messages) {
-          inputMessages.push({
-            role: message.role,
-            parts: this._mapContentBlocksToOtelParts(message.content),
-          })
+          inputMessages.push({ role: message.role, parts: mapContentBlocksToOtelParts(message.content) })
         }
-        this._addEvent(span, 'gen_ai.client.inference.operation.details', {
-          'gen_ai.input.messages': serialize(inputMessages),
-        })
+        this._addEvent(span, 'gen_ai.client.inference.operation.details', { 'gen_ai.input.messages': serialize(inputMessages) })
       } else {
         for (const message of messages) {
           const eventName = this._getEventNameForMessage(message)
-          this._addEvent(span, eventName, {
-            content: serialize(message.content),
-          })
+          this._addEvent(span, eventName, { content: serialize(message.content) })
         }
       }
     } catch (err) {
@@ -921,12 +712,8 @@ export class Tracer {
     }
   }
 
-  /**
-   * Get the event name for a message based on its type.
-   */
   private _getEventNameForMessage(message: Message): string {
     try {
-      // Check if this is a tool result message
       if (message.role === 'user' && Array.isArray(message.content)) {
         for (const block of message.content) {
           if (block && typeof block === 'object' && 'type' in block && block.type === 'toolResultBlock') {
@@ -934,14 +721,8 @@ export class Tracer {
           }
         }
       }
-
-      // Default based on role
-      if (message.role === 'user') {
-        return 'gen_ai.user.message'
-      } else if (message.role === 'assistant') {
-        return 'gen_ai.assistant.message'
-      }
-
+      if (message.role === 'user') return 'gen_ai.user.message'
+      if (message.role === 'assistant') return 'gen_ai.assistant.message'
       return 'gen_ai.message'
     } catch (err) {
       logger.warn(`error=<${err}> | failed to determine event name for message`)
@@ -949,91 +730,63 @@ export class Tracer {
     }
   }
 
-  /**
-   * Merge custom attributes with standard attributes.
-   */
+
   private _mergeAttributes(
     standardAttributes: Record<string, AttributeValue>,
-    customAttributes?: Record<string, AttributeValue>,
+    customAttributes?: Record<string, unknown>,
   ): Record<string, AttributeValue> {
-    const merged = { ...standardAttributes, ...this._customTraceAttributes }
-
-    if (customAttributes) {
-      Object.assign(merged, customAttributes)
+    if (!customAttributes) {
+      return standardAttributes
     }
-
-    return merged
-  }
-
-  /**
-   * Map content blocks to OTEL parts format.
-   */
-  private _mapContentBlocksToOtelParts(contentBlocks: unknown[]): Record<string, unknown>[] {
-    try {
-      return contentBlocks.map((block) => {
-        if (!block || typeof block !== 'object') {
-          return { type: 'unknown' }
-        }
-
-        const blockObj = block as Record<string, unknown>
-
-        if (blockObj.type === 'textBlock') {
-          return {
-            type: 'text',
-            content: blockObj.text,
-          }
-        } else if (blockObj.type === 'toolUseBlock') {
-          return {
-            type: 'tool_call',
-            name: blockObj.name,
-            id: blockObj.toolUseId,
-            arguments: blockObj.input,
-          }
-        } else if (blockObj.type === 'toolResultBlock') {
-          return {
-            type: 'tool_call_response',
-            id: blockObj.toolUseId,
-            response: blockObj.content,
-          }
-        } else if (blockObj.type === 'interruptResponseBlock') {
-          return {
-            type: 'interrupt_response',
-            id: blockObj.interruptId,
-            response: blockObj.response,
-          }
-        }
-
-        return blockObj as Record<string, unknown>
-      })
-    } catch (err) {
-      logger.warn(`error=<${err}> | failed to map content blocks`)
-      return []
+    const validCustomAttributes: Record<string, AttributeValue> = {}
+    for (const [key, value] of Object.entries(customAttributes)) {
+      if (
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean' ||
+        Array.isArray(value)
+      ) {
+        validCustomAttributes[key] = value as AttributeValue
+      }
     }
+    return { ...standardAttributes, ...validCustomAttributes }
   }
-}
-
-/**
- * Serialize objects to JSON strings for inclusion in spans.
- * Handles circular references and special types using a custom encoder.
- */
-export function serialize(value: unknown): string {
-  return _encoder.encode(value)
 }
 
 /**
  * Map content blocks to OTEL parts format.
  */
 export function mapContentBlocksToOtelParts(contentBlocks: unknown[]): Record<string, unknown>[] {
-  const tracer = new Tracer()
-  return tracer['_mapContentBlocksToOtelParts'](contentBlocks)
+  try {
+    return contentBlocks.map((block) => {
+      if (!block || typeof block !== 'object') return { type: 'unknown' }
+
+      const blockObj = block as Record<string, unknown>
+
+      if (blockObj.type === 'textBlock') return { type: 'text', content: blockObj.text }
+      if (blockObj.type === 'toolUseBlock') return { type: 'tool_call', name: blockObj.name, id: blockObj.toolUseId, arguments: blockObj.input }
+      if (blockObj.type === 'toolResultBlock') return { type: 'tool_call_response', id: blockObj.toolUseId, response: blockObj.content }
+      if (blockObj.type === 'interruptResponseBlock') return { type: 'interrupt_response', id: blockObj.interruptId, response: blockObj.response }
+
+      return blockObj as Record<string, unknown>
+    })
+  } catch (err) {
+    logger.warn(`error=<${err}> | failed to map content blocks`)
+    return []
+  }
 }
 
-// Global tracer instance for singleton access
+/**
+ * Serialize objects to JSON strings for inclusion in spans.
+ */
+export function serialize(value: unknown): string {
+  return _encoder.encode(value)
+}
+
 let _globalTracerInstance: Tracer | null = null
 
 /**
  * Get or create the global tracer instance.
- * Returns the same instance on subsequent calls.
  */
 export function getTracer(): Tracer {
   if (!_globalTracerInstance) {

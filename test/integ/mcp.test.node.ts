@@ -5,8 +5,8 @@
  * Verifies that agents can successfully use MCP tools via the Bedrock model.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { McpClient, Agent } from '@strands-agents/sdk'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
+import { McpClient, Agent, StrandsTelemetry } from '@strands-agents/sdk'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { resolve } from 'node:path'
@@ -16,6 +16,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { bedrock } from './__fixtures__/model-providers.js'
 import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'
+import { _resetGlobalTelemetryHookProvider, _resetTracerProvider } from '$/sdk/telemetry/config.js'
 
 type TransportConfig = {
   name: string
@@ -135,6 +136,17 @@ describe('MCP Integration Tests', () => {
       await tracerProvider.shutdown()
     })
 
+    beforeEach(() => {
+      // Enable telemetry by instantiating StrandsTelemetry
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      // Reset global telemetry state
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('should inject OpenTelemetry context into MCP tool calls', async () => {
       const client = new McpClient({
         applicationName: 'test-mcp-context',
@@ -150,9 +162,6 @@ describe('MCP Integration Tests', () => {
         systemPrompt: 'You are a helpful assistant. Use the echo tool when asked.',
         tools: [client],
         model,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       // Clear previous spans
@@ -203,9 +212,6 @@ describe('MCP Integration Tests', () => {
         systemPrompt: 'You are a helpful assistant. Use tools when asked.',
         tools: [client],
         model,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       // Clear previous spans

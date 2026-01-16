@@ -31,7 +31,9 @@ import {
   AfterToolCallEvent,
   AfterToolsEvent,
 } from '../hooks/events.js'
-import type { IMeter, TokenUsage } from './meter-interface.js'
+import type { IMeter } from './meter-interface.js'
+import type { Usage } from './types.js'
+import { createEmptyUsage, accumulateUsage, getModelId } from './utils.js'
 
 /**
  * Configuration options for MeterHookAdapter.
@@ -43,19 +45,6 @@ export interface MeterHookAdapterConfig {
    * When false, only records agent, model, and tool metrics.
    */
   enableCycleMetrics?: boolean
-}
-
-/**
- * Creates an empty token usage object.
- */
-function createEmptyUsage(): TokenUsage {
-  return {
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0,
-    cacheReadInputTokens: 0,
-    cacheWriteInputTokens: 0,
-  }
 }
 
 /**
@@ -106,8 +95,8 @@ export class MeterHookAdapter implements HookProvider {
   private readonly _toolStartTimes: Map<string, number> = new Map()
 
   // Accumulated state
-  private _accumulatedUsage: TokenUsage = createEmptyUsage()
-  private _cycleUsage: TokenUsage = createEmptyUsage()
+  private _accumulatedUsage: Usage = createEmptyUsage()
+  private _cycleUsage: Usage = createEmptyUsage()
 
   // Agent info (captured at invocation start)
   private _agentName: string = ''
@@ -164,8 +153,7 @@ export class MeterHookAdapter implements HookProvider {
     // Capture agent info
     this._agentName = event.agent.name
     this._agentId = event.agent.agentId
-    const modelConfig = event.agent.model.getConfig()
-    this._modelId = modelConfig.modelId || event.agent.model.constructor.name
+    this._modelId = getModelId(event.agent)
   }
 
   /**
@@ -211,23 +199,11 @@ export class MeterHookAdapter implements HookProvider {
   private _onAfterModelCall = (event: AfterModelCallEvent): void => {
     // Accumulate usage
     if (event.usage) {
-      this._accumulatedUsage.inputTokens += event.usage.inputTokens
-      this._accumulatedUsage.outputTokens += event.usage.outputTokens
-      this._accumulatedUsage.totalTokens += event.usage.totalTokens
-      this._accumulatedUsage.cacheReadInputTokens =
-        (this._accumulatedUsage.cacheReadInputTokens ?? 0) + (event.usage.cacheReadInputTokens ?? 0)
-      this._accumulatedUsage.cacheWriteInputTokens =
-        (this._accumulatedUsage.cacheWriteInputTokens ?? 0) + (event.usage.cacheWriteInputTokens ?? 0)
+      accumulateUsage(this._accumulatedUsage, event.usage)
 
       // Also accumulate to cycle usage
       if (this._enableCycleMetrics) {
-        this._cycleUsage.inputTokens += event.usage.inputTokens
-        this._cycleUsage.outputTokens += event.usage.outputTokens
-        this._cycleUsage.totalTokens += event.usage.totalTokens
-        this._cycleUsage.cacheReadInputTokens =
-          (this._cycleUsage.cacheReadInputTokens ?? 0) + (event.usage.cacheReadInputTokens ?? 0)
-        this._cycleUsage.cacheWriteInputTokens =
-          (this._cycleUsage.cacheWriteInputTokens ?? 0) + (event.usage.cacheWriteInputTokens ?? 0)
+        accumulateUsage(this._cycleUsage, event.usage)
       }
     }
 
@@ -326,7 +302,7 @@ export class MeterHookAdapter implements HookProvider {
    * Get the accumulated usage (for testing/debugging).
    * @internal
    */
-  get accumulatedUsage(): TokenUsage {
+  get accumulatedUsage(): Usage {
     return { ...this._accumulatedUsage }
   }
 }

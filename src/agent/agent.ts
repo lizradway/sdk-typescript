@@ -45,7 +45,8 @@ import {
   ModelStreamEventHook,
 } from '../hooks/events.js'
 import { TelemetryHookProvider } from '../telemetry/telemetry-hook-provider.js'
-import type { TelemetryConfig, AttributeValue } from '../telemetry/types.js'
+import { getGlobalTelemetryHookProvider } from '../telemetry/config.js'
+import type { AttributeValue } from '../telemetry/types.js'
 import { validateIdentifier, IdentifierType } from '../identifier.js'
 import { context, trace } from '@opentelemetry/api'
 
@@ -111,11 +112,6 @@ export type AgentConfig = {
    * Hooks enable observing and extending agent behavior.
    */
   hooks?: HookProvider[]
-  /**
-   * Telemetry configuration for OpenTelemetry tracing.
-   * When provided, enables automatic tracing of agent operations.
-   */
-  telemetryConfig?: TelemetryConfig
   /**
    * Custom trace attributes to include in all spans.
    * These attributes are merged with standard attributes in telemetry spans.
@@ -190,6 +186,11 @@ export class Agent implements AgentData {
    */
   public readonly agentId: string
 
+  /**
+   * Custom trace attributes to include in telemetry spans.
+   */
+  public readonly customTraceAttributes?: Record<string, unknown> | undefined
+
   private _toolRegistry: ToolRegistry
   private _mcpClients: McpClient[]
   private _initialized: boolean
@@ -209,6 +210,7 @@ export class Agent implements AgentData {
     this.conversationManager = config?.conversationManager ?? new SlidingWindowConversationManager({ windowSize: 40 })
     this.name = config?.name ?? DEFAULT_AGENT_NAME
     this.agentId = validateIdentifier(config?.agentId, IdentifierType.AGENT)
+    this.customTraceAttributes = config?.customTraceAttributes
 
     // Initialize hooks and register conversation manager hooks
     this.hooks = new HookRegistryImplementation()
@@ -235,11 +237,11 @@ export class Agent implements AgentData {
       this._printer = new AgentPrinter(getDefaultAppender())
     }
 
-    // Initialize telemetry via hook provider if enabled
-    // This keeps the same user-facing API (telemetryConfig) but implements it via hooks internally
-    if (config?.telemetryConfig?.enabled === true) {
-      this._telemetryHookProvider = new TelemetryHookProvider(config.telemetryConfig)
-      this.hooks.addHook(this._telemetryHookProvider)
+    // Initialize telemetry via hook provider if StrandsTelemetry was instantiated
+    const globalHookProvider = getGlobalTelemetryHookProvider()
+    if (globalHookProvider) {
+      this._telemetryHookProvider = globalHookProvider as TelemetryHookProvider
+      this.hooks.addHook(globalHookProvider)
     }
 
     // Initialize event loop metrics for tracking

@@ -105,8 +105,6 @@ export { tool } from './tools/zod-tool.js'
 
 // Streaming event types
 export type {
-  Usage,
-  Metrics,
   ModelMessageStartEventData,
   ModelMessageStartEvent,
   ToolUseStart,
@@ -157,9 +155,6 @@ export type {
   HookProvider,
   HookEventConstructor,
   ModelStopResponse,
-  ModelUsage,
-  ModelMetrics,
-  AccumulatedUsage,
 } from './hooks/index.js'
 
 // Conversation Manager
@@ -177,23 +172,20 @@ export type { Logger } from './logging/types.js'
 export { type McpClientConfig, McpClient } from './mcp.js'
 
 // Telemetry
-export { Tracer, StrandsTelemetry, TracerHookAdapter, MeterHookAdapter } from './telemetry/index.js'
+export { Tracer, StrandsTelemetry, TracerHookAdapter, MeterHookAdapter, getGlobalTelemetryHookProvider } from './telemetry/index.js'
 export type {
-  TelemetryConfig,
+  StrandsTelemetryConfig,
   AttributeValue,
+  Usage,
+  Metrics,
   ITracer,
   TracerSpanHandle,
   TracerHookAdapterConfig,
-  StartAgentSpanParams,
-  EndAgentSpanParams,
-  StartModelSpanParams,
-  EndModelSpanParams,
-  StartToolSpanParams,
-  EndToolSpanParams,
-  StartCycleSpanParams,
-  EndCycleSpanParams,
+  StartSpanEvent,
+  EndSpanEvent,
+  StartSpanContext,
+  EndSpanContext,
   IMeter,
-  TokenUsage,
   MeterHookAdapterConfig,
   RecordModelCallParams,
   RecordToolExecutionParams,

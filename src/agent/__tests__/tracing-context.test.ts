@@ -1,16 +1,17 @@
 /**
  * Tests for TracingContext propagation to tools.
  *
- * These tests verify that when telemetry is enabled, tools receive
- * tracing context via ToolContext.tracing for distributed tracing.
+ * These tests verify that when telemetry is enabled via StrandsTelemetry,
+ * tools receive tracing context via ToolContext.tracing for distributed tracing.
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { Agent } from '../agent.js'
 import { MockMessageModel } from '../../__fixtures__/mock-message-model.js'
 import { collectGenerator } from '../../__fixtures__/model-test-helpers.js'
 import { TextBlock, ToolResultBlock } from '../../types/messages.js'
 import type { Tool, ToolContext, TracingContext } from '../../tools/tool.js'
+import { StrandsTelemetry, _resetGlobalTelemetryHookProvider, _resetTracerProvider } from '../../telemetry/config.js'
 
 /**
  * Creates a tool that captures the ToolContext it receives.
@@ -53,6 +54,17 @@ function createContextCapturingTool(name: string): {
 
 describe('TracingContext propagation', () => {
   describe('when telemetry is enabled', () => {
+    beforeEach(() => {
+      // Enable telemetry by instantiating StrandsTelemetry
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      // Reset global telemetry state
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('passes tracing context to tools', async () => {
       const { tool, getCapturedTracingContext } = createContextCapturingTool('test_tool')
 
@@ -63,7 +75,6 @@ describe('TracingContext propagation', () => {
       const agent = new Agent({
         model,
         tools: [tool],
-        telemetryConfig: { enabled: true },
         printer: false,
       })
 
@@ -87,7 +98,6 @@ describe('TracingContext propagation', () => {
       const agent = new Agent({
         model,
         tools: [tool],
-        telemetryConfig: { enabled: true },
         printer: false,
       })
 
@@ -118,7 +128,6 @@ describe('TracingContext propagation', () => {
       const agent = new Agent({
         model,
         tools: [tool],
-        telemetryConfig: { enabled: true },
         printer: false,
       })
 
@@ -146,7 +155,6 @@ describe('TracingContext propagation', () => {
       const agent = new Agent({
         model,
         tools: [tool1, tool2],
-        telemetryConfig: { enabled: true },
         printer: false,
       })
 
@@ -200,7 +208,6 @@ describe('TracingContext propagation', () => {
       const agent = new Agent({
         model,
         tools: [tool],
-        telemetryConfig: { enabled: true },
         printer: false,
       })
 
@@ -213,6 +220,12 @@ describe('TracingContext propagation', () => {
   })
 
   describe('when telemetry is disabled', () => {
+    beforeEach(() => {
+      // Ensure telemetry is disabled by resetting global state
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('does not pass tracing context to tools', async () => {
       const { tool, getCapturedTracingContext, getCapturedContext } = createContextCapturingTool('test_tool')
 
@@ -223,7 +236,7 @@ describe('TracingContext propagation', () => {
       const agent = new Agent({
         model,
         tools: [tool],
-        // telemetryConfig not set or enabled: false
+        // No StrandsTelemetry instantiated, so telemetry is disabled
         printer: false,
       })
 
@@ -239,7 +252,7 @@ describe('TracingContext propagation', () => {
       expect(tracingContext).toBeUndefined()
     })
 
-    it('does not pass tracing context when telemetryConfig.enabled is false', async () => {
+    it('does not pass tracing context when StrandsTelemetry is not instantiated', async () => {
       const { tool, getCapturedTracingContext } = createContextCapturingTool('test_tool')
 
       const model = new MockMessageModel()
@@ -249,7 +262,6 @@ describe('TracingContext propagation', () => {
       const agent = new Agent({
         model,
         tools: [tool],
-        telemetryConfig: { enabled: false },
         printer: false,
       })
 
@@ -261,6 +273,17 @@ describe('TracingContext propagation', () => {
   })
 
   describe('TracingContext structure', () => {
+    beforeEach(() => {
+      // Enable telemetry by instantiating StrandsTelemetry
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      // Reset global telemetry state
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('includes all required W3C Trace Context fields', async () => {
       const { tool, getCapturedTracingContext } = createContextCapturingTool('test_tool')
 
@@ -271,7 +294,6 @@ describe('TracingContext propagation', () => {
       const agent = new Agent({
         model,
         tools: [tool],
-        telemetryConfig: { enabled: true },
         printer: false,
       })
 
@@ -303,7 +325,6 @@ describe('TracingContext propagation', () => {
       const agent = new Agent({
         model,
         tools: [tool],
-        telemetryConfig: { enabled: true },
         printer: false,
       })
 
@@ -319,6 +340,17 @@ describe('TracingContext propagation', () => {
   })
 
   describe('tool can use tracing context for HTTP headers', () => {
+    beforeEach(() => {
+      // Enable telemetry by instantiating StrandsTelemetry
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      // Reset global telemetry state
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('provides headers suitable for W3C Trace Context propagation', async () => {
       let capturedHeaders: Record<string, string> | undefined
 
@@ -357,7 +389,6 @@ describe('TracingContext propagation', () => {
       const agent = new Agent({
         model,
         tools: [httpTool],
-        telemetryConfig: { enabled: true },
         printer: false,
       })
 

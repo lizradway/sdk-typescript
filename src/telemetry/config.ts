@@ -41,52 +41,9 @@ import { MeterProvider, PeriodicExportingMetricReader, ConsoleMetricExporter } f
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http'
 import { logger } from '../logging/index.js'
-
-/**
- * Options for configuring the OTLP exporter.
- */
-export interface OtlpExporterOptions {
-  /**
-   * The OTLP endpoint URL (e.g., http://localhost:4317).
-   * Falls back to OTEL_EXPORTER_OTLP_ENDPOINT environment variable if not provided.
-   */
-  endpoint?: string
-
-  /**
-   * Headers to include in OTLP requests (e.g., Authorization).
-   * Falls back to OTEL_EXPORTER_OTLP_HEADERS environment variable if not provided.
-   */
-  headers?: Record<string, string>
-}
-
-/**
- * Options for configuring the meter (metrics).
- */
-export interface MeterOptions {
-  /**
-   * Enable console metrics exporter for debugging.
-   * Defaults to false.
-   */
-  console?: boolean
-
-  /**
-   * Enable OTLP metrics exporter.
-   * Defaults to false.
-   */
-  otlp?: boolean
-
-  /**
-   * The OTLP endpoint URL for metrics.
-   * Falls back to OTEL_EXPORTER_OTLP_ENDPOINT environment variable if not provided.
-   */
-  endpoint?: string
-
-  /**
-   * Headers to include in OTLP metrics requests.
-   * Falls back to OTEL_EXPORTER_OTLP_HEADERS environment variable if not provided.
-   */
-  headers?: Record<string, string>
-}
+import type { OtlpExporterOptions, MeterOptions } from './types.js'
+import { TelemetryHookProvider } from './telemetry-hook-provider.js'
+import type { HookProvider } from '../hooks/types.js'
 
 /**
  * Get or create the OpenTelemetry resource with service information.
@@ -109,6 +66,25 @@ export function getOtelResource(): Resource {
 
 // Global tracer provider instance
 let _tracerProvider: NodeTracerProvider | null = null
+
+// Global telemetry hook provider - set when StrandsTelemetry is instantiated
+let _globalTelemetryHookProvider: HookProvider | null = null
+
+/**
+ * Get the global telemetry hook provider.
+ * Returns the hook provider if StrandsTelemetry has been instantiated, null otherwise.
+ */
+export function getGlobalTelemetryHookProvider(): HookProvider | null {
+  return _globalTelemetryHookProvider
+}
+
+/**
+ * Reset global telemetry hook provider (for testing only).
+ * @internal
+ */
+export function _resetGlobalTelemetryHookProvider(): void {
+  _globalTelemetryHookProvider = null
+}
 
 /**
  * Get the global tracer provider instance.
@@ -166,11 +142,59 @@ export function _resetTracerProvider(): void {
 }
 
 /**
+ * Configuration options for StrandsTelemetry.
+ */
+export interface StrandsTelemetryConfig {
+  /**
+   * Enable cycle spans in the trace hierarchy.
+   * When true (default), traces include cycle spans that group model calls and tool executions.
+   * When false, model and tool spans are direct children of the agent span (flat hierarchy).
+   *
+   * With cycle spans (default):
+   * ```
+   * Agent Span
+   * ├── Cycle Span (cycle-1)
+   * │   ├── Model Span (chat)
+   * │   └── Tool Span (execute_tool)
+   * └── Cycle Span (cycle-2)
+   *     └── Model Span (chat)
+   * ```
+   *
+   * Without cycle spans:
+   * ```
+   * Agent Span
+   * ├── Model Span (chat)
+   * ├── Tool Span (execute_tool)
+   * └── Model Span (chat)
+   * ```
+   */
+  enableCycleSpans?: boolean
+}
+
+/**
  * OpenTelemetry configuration and setup for Strands applications.
  *
- * Automatically initializes a tracer provider with text map propagators.
+ * Automatically initializes a tracer provider with text map propagators and
+ * registers a global telemetry hook provider. When instantiated, telemetry is
+ * automatically enabled for all Agent instances.
+ *
  * Trace exporters (console, OTLP) can be set up individually using dedicated methods
  * that support method chaining for convenient configuration.
+ *
+ * @example
+ * ```typescript
+ * // Enable telemetry for all agents
+ * const telemetry = new StrandsTelemetry().setupOtlpExporter()
+ *
+ * // Create agent with custom trace attributes
+ * const agent = new Agent({
+ *   model,
+ *   customTraceAttributes: {
+ *     'session.id': 'abc-1234',
+ *     'user.id': 'user@example.com',
+ *   },
+ * })
+ * ```
  */
 export class StrandsTelemetry {
   private _tracerProvider: NodeTracerProvider
@@ -178,11 +202,19 @@ export class StrandsTelemetry {
 
   /**
    * Initialize the StrandsTelemetry instance.
-   * Creates and sets the global tracer provider.
+   * Creates and sets the global tracer provider and registers a global telemetry hook provider.
    * Use method chaining to configure exporters (setupOtlpExporter, setupConsoleExporter, setupMeter).
+   *
+   * @param config - Optional configuration for telemetry behavior
    */
-  constructor() {
+  constructor(config?: StrandsTelemetryConfig) {
     this._tracerProvider = initializeTracerProvider()
+
+    // Register global telemetry hook provider with defaults
+    _globalTelemetryHookProvider = new TelemetryHookProvider({
+      enableCycleSpans: config?.enableCycleSpans ?? true,
+    })
+    logger.warn('telemetry=<enabled> | global telemetry hook provider registered')
   }
 
   /**

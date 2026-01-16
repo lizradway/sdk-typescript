@@ -1417,4 +1417,172 @@ describe('OpenAIModel', () => {
       }).rejects.toThrow('Network connection lost')
     })
   })
+
+  describe('config parameters', () => {
+    it('includes topP in request when configured', async () => {
+      const mockClient = createMockClient(async function* () {
+        yield { choices: [{ delta: { role: 'assistant' }, index: 0 }] }
+        yield { choices: [{ finish_reason: 'stop', delta: {}, index: 0 }] }
+      })
+      const createSpy = vi.spyOn(mockClient.chat.completions, 'create')
+
+      const provider = new OpenAIModel({ modelId: 'gpt-4o', client: mockClient, topP: 0.9 })
+      const messages: Message[] = [{ type: 'message', role: 'user', content: [{ type: 'textBlock', text: 'Hi' }] }]
+
+      await collectIterator(provider.stream(messages))
+
+      expect(createSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          top_p: 0.9,
+        })
+      )
+    })
+
+    it('includes frequencyPenalty in request when configured', async () => {
+      const mockClient = createMockClient(async function* () {
+        yield { choices: [{ delta: { role: 'assistant' }, index: 0 }] }
+        yield { choices: [{ finish_reason: 'stop', delta: {}, index: 0 }] }
+      })
+      const createSpy = vi.spyOn(mockClient.chat.completions, 'create')
+
+      const provider = new OpenAIModel({ modelId: 'gpt-4o', client: mockClient, frequencyPenalty: 0.5 })
+      const messages: Message[] = [{ type: 'message', role: 'user', content: [{ type: 'textBlock', text: 'Hi' }] }]
+
+      await collectIterator(provider.stream(messages))
+
+      expect(createSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          frequency_penalty: 0.5,
+        })
+      )
+    })
+
+    it('includes presencePenalty in request when configured', async () => {
+      const mockClient = createMockClient(async function* () {
+        yield { choices: [{ delta: { role: 'assistant' }, index: 0 }] }
+        yield { choices: [{ finish_reason: 'stop', delta: {}, index: 0 }] }
+      })
+      const createSpy = vi.spyOn(mockClient.chat.completions, 'create')
+
+      const provider = new OpenAIModel({ modelId: 'gpt-4o', client: mockClient, presencePenalty: 0.3 })
+      const messages: Message[] = [{ type: 'message', role: 'user', content: [{ type: 'textBlock', text: 'Hi' }] }]
+
+      await collectIterator(provider.stream(messages))
+
+      expect(createSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presence_penalty: 0.3,
+        })
+      )
+    })
+  })
+
+  describe('tool choice options', () => {
+    it('sets tool_choice to auto when toolChoice.auto is specified', async () => {
+      const mockClient = createMockClient(async function* () {
+        yield { choices: [{ delta: { role: 'assistant' }, index: 0 }] }
+        yield { choices: [{ finish_reason: 'stop', delta: {}, index: 0 }] }
+      })
+      const createSpy = vi.spyOn(mockClient.chat.completions, 'create')
+
+      const provider = new OpenAIModel({ modelId: 'gpt-4o', client: mockClient })
+      const messages: Message[] = [{ type: 'message', role: 'user', content: [{ type: 'textBlock', text: 'Hi' }] }]
+
+      await collectIterator(
+        provider.stream(messages, {
+          toolSpecs: [{ name: 'test', description: 'test tool', inputSchema: {} }],
+          toolChoice: { auto: {} },
+        })
+      )
+
+      expect(createSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tool_choice: 'auto',
+        })
+      )
+    })
+
+    it('sets tool_choice to required when toolChoice.any is specified', async () => {
+      const mockClient = createMockClient(async function* () {
+        yield { choices: [{ delta: { role: 'assistant' }, index: 0 }] }
+        yield { choices: [{ finish_reason: 'stop', delta: {}, index: 0 }] }
+      })
+      const createSpy = vi.spyOn(mockClient.chat.completions, 'create')
+
+      const provider = new OpenAIModel({ modelId: 'gpt-4o', client: mockClient })
+      const messages: Message[] = [{ type: 'message', role: 'user', content: [{ type: 'textBlock', text: 'Hi' }] }]
+
+      await collectIterator(
+        provider.stream(messages, {
+          toolSpecs: [{ name: 'test', description: 'test tool', inputSchema: {} }],
+          toolChoice: { any: {} },
+        })
+      )
+
+      expect(createSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tool_choice: 'required',
+        })
+      )
+    })
+
+    it('sets tool_choice to specific tool when toolChoice.tool is specified', async () => {
+      const mockClient = createMockClient(async function* () {
+        yield { choices: [{ delta: { role: 'assistant' }, index: 0 }] }
+        yield { choices: [{ finish_reason: 'stop', delta: {}, index: 0 }] }
+      })
+      const createSpy = vi.spyOn(mockClient.chat.completions, 'create')
+
+      const provider = new OpenAIModel({ modelId: 'gpt-4o', client: mockClient })
+      const messages: Message[] = [{ type: 'message', role: 'user', content: [{ type: 'textBlock', text: 'Hi' }] }]
+
+      await collectIterator(
+        provider.stream(messages, {
+          toolSpecs: [{ name: 'calculator', description: 'test tool', inputSchema: {} }],
+          toolChoice: { tool: { name: 'calculator' } },
+        })
+      )
+
+      expect(createSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tool_choice: {
+            type: 'function',
+            function: { name: 'calculator' },
+          },
+        })
+      )
+    })
+  })
+
+  describe('edge cases', () => {
+    it('handles invalid choice format gracefully', async () => {
+      const mockClient = createMockClient(async function* () {
+        yield { choices: [{ delta: { role: 'assistant' }, index: 0 }] }
+        yield { choices: ['invalid'] } // Invalid choice format
+        yield { choices: [{ finish_reason: 'stop', delta: {}, index: 0 }] }
+      })
+
+      const provider = new OpenAIModel({ modelId: 'gpt-4o', client: mockClient })
+      const messages: Message[] = [{ type: 'message', role: 'user', content: [{ type: 'textBlock', text: 'Hi' }] }]
+
+      // Should not throw, just skip invalid chunks
+      const events = await collectIterator(provider.stream(messages))
+      expect(events.length).toBeGreaterThan(0)
+    })
+
+    it('handles chunk with no delta and no finish_reason', async () => {
+      const mockClient = createMockClient(async function* () {
+        yield { choices: [{ delta: { role: 'assistant' }, index: 0 }] }
+        yield { choices: [{ index: 0 }] } // No delta, no finish_reason
+        yield { choices: [{ finish_reason: 'stop', delta: {}, index: 0 }] }
+      })
+
+      const provider = new OpenAIModel({ modelId: 'gpt-4o', client: mockClient })
+      const messages: Message[] = [{ type: 'message', role: 'user', content: [{ type: 'textBlock', text: 'Hi' }] }]
+
+      // Should not throw, just skip the chunk
+      const events = await collectIterator(provider.stream(messages))
+      expect(events.length).toBeGreaterThan(0)
+    })
+  })
 })

@@ -27,21 +27,7 @@
  * ```
  */
 
-/**
- * Token usage from a model call.
- */
-export interface TokenUsage {
-  /** Number of input tokens */
-  inputTokens: number
-  /** Number of output tokens */
-  outputTokens: number
-  /** Total tokens (input + output) */
-  totalTokens: number
-  /** Tokens read from cache (optional) */
-  cacheReadInputTokens?: number | undefined
-  /** Tokens written to cache (optional) */
-  cacheWriteInputTokens?: number | undefined
-}
+import type { Usage } from './types.js'
 
 /**
  * Parameters for recording a model call.
@@ -50,7 +36,7 @@ export interface RecordModelCallParams {
   /** The model ID that was called */
   modelId: string
   /** Token usage from the model call */
-  usage: TokenUsage
+  usage: Usage
   /** Latency in milliseconds */
   latencyMs: number
   /** Time to first token in milliseconds (optional) */
@@ -96,7 +82,7 @@ export interface RecordAgentInvocationParams {
   /** Number of event loop cycles */
   cycleCount: number
   /** Accumulated token usage across all model calls */
-  usage: TokenUsage
+  usage: Usage
   /** Whether the invocation was successful */
   success: boolean
   /** Error message if the invocation failed */
@@ -114,7 +100,7 @@ export interface RecordCycleParams {
   /** Duration of the cycle in seconds */
   durationSeconds: number
   /** Token usage during this cycle */
-  usage?: TokenUsage | undefined
+  usage?: Usage | undefined
   /** Custom attributes to include */
   attributes?: Record<string, string | number | boolean> | undefined
 }

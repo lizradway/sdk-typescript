@@ -4,36 +4,7 @@ import type { Tool, TracingContext } from '../tools/tool.js'
 import type { JSONValue } from '../types/json.js'
 import type { ModelStreamEvent } from '../models/streaming.js'
 import type { Span } from '@opentelemetry/api'
-
-/**
- * Usage information from model calls for telemetry.
- */
-export interface ModelUsage {
-  inputTokens: number
-  outputTokens: number
-  totalTokens: number
-  cacheReadInputTokens?: number
-  cacheWriteInputTokens?: number
-}
-
-/**
- * Metrics from model calls for telemetry.
- */
-export interface ModelMetrics {
-  timeToFirstByteMs?: number
-  latencyMs?: number
-}
-
-/**
- * Accumulated usage across all model calls in an invocation.
- */
-export interface AccumulatedUsage {
-  inputTokens: number
-  outputTokens: number
-  totalTokens: number
-  cacheReadInputTokens: number
-  cacheWriteInputTokens: number
-}
+import type { Usage, Metrics } from '../telemetry/types.js'
 
 /**
  * Base class for all hook events.
@@ -85,7 +56,7 @@ export class AfterInvocationEvent extends HookEvent {
   /**
    * Accumulated token usage across all model calls in this invocation.
    */
-  readonly accumulatedUsage?: AccumulatedUsage
+  readonly accumulatedUsage?: Usage
   /**
    * Error that occurred during invocation, if any.
    */
@@ -94,7 +65,7 @@ export class AfterInvocationEvent extends HookEvent {
   constructor(data: {
     agent: AgentData
     result?: { message: Message; stopReason: string }
-    accumulatedUsage?: AccumulatedUsage
+    accumulatedUsage?: Usage
     error?: Error
   }) {
     super()
@@ -285,11 +256,11 @@ export class AfterModelCallEvent extends HookEvent {
   /**
    * Token usage from this model call.
    */
-  readonly usage?: ModelUsage
+  readonly usage?: Usage
   /**
    * Performance metrics from this model call.
    */
-  readonly metrics?: ModelMetrics
+  readonly metrics?: Metrics
 
   /**
    * Optional flag that can be set by hook callbacks to request a retry of the model call.
@@ -302,8 +273,8 @@ export class AfterModelCallEvent extends HookEvent {
     agent: AgentData
     stopData?: ModelStopData
     error?: Error
-    usage?: ModelUsage
-    metrics?: ModelMetrics
+    usage?: Usage
+    metrics?: Metrics
   }) {
     super()
     this.agent = data.agent

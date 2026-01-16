@@ -6,7 +6,7 @@
 import { metrics as metricsApi, type Counter, type Histogram, type Meter } from '@opentelemetry/api'
 import * as constants from './metrics-constants.js'
 import type { Message } from '../types/messages.js'
-import type { Usage, Metrics } from '../models/streaming.js'
+import type { Usage, Metrics } from '../telemetry/types.js'
 import type { ToolUse } from './types.js'
 import { logger } from '../logging/index.js'
 
@@ -258,6 +258,7 @@ export class EventLoopMetrics {
 
   /**
    * Helper method to accumulate usage from source to target.
+   * Uses the Usage type from models/streaming.js which has optional cache fields.
    */
   private _accumulateUsage(target: Usage, source: Usage): void {
     target.inputTokens += source.inputTokens
@@ -289,12 +290,12 @@ export class EventLoopMetrics {
 
     this._accumulateUsage(this.accumulatedUsage, usage)
     
-    // Update latest agent invocation usage (Python: self._accumulate_usage(self.agent_invocations[-1].usage, usage))
+    // Update latest agent invocation usage
     const latestInvocation = this.latestAgentInvocation
     if (latestInvocation) {
       this._accumulateUsage(latestInvocation.usage, usage)
 
-      // Update current cycle usage (Python: current_cycle = self.agent_invocations[-1].cycles[-1])
+      // Update current cycle usage
       const currentCycle = latestInvocation.cycles[latestInvocation.cycles.length - 1]
       if (currentCycle) {
         this._accumulateUsage(currentCycle.usage, usage)
@@ -313,8 +314,10 @@ export class EventLoopMetrics {
    * Update the accumulated performance metrics with new metrics data.
    */
   updateMetrics(metrics: Metrics): void {
-    this._metricsClient.eventLoopLatency.record(metrics.latencyMs)
-    this.accumulatedMetrics.latencyMs += metrics.latencyMs
+    if (metrics.latencyMs !== undefined) {
+      this._metricsClient.eventLoopLatency.record(metrics.latencyMs)
+      this.accumulatedMetrics.latencyMs = (this.accumulatedMetrics.latencyMs ?? 0) + metrics.latencyMs
+    }
   }
 
   /**

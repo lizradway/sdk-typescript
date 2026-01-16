@@ -4,14 +4,28 @@
  * This module provides a HookProvider that delegates to an ITracer implementation,
  * allowing users to provide custom tracing backends without understanding hooks.
  *
+ * The default Tracer uses startActiveSpan for automatic context propagation -
+ * child spans automatically parent to the current active span.
+ *
  * @example
  * ```typescript
  * import { ITracer, TracerHookAdapter, Agent } from '@strands-agents/sdk'
  *
  * class MyTracer implements ITracer {
- *   startAgentSpan(params) { return myBackend.startSpan('agent', params) }
- *   endAgentSpan(span, params) { myBackend.endSpan(span, params) }
- *   // ... other methods
+ *   startSpan(event) {
+ *     switch (event.type) {
+ *       case 'beforeInvocationEvent':
+ *         return myBackend.startSpan('agent', { name: event.agent.name })
+ *       case 'beforeModelCallEvent':
+ *         return myBackend.startSpan('model')
+ *       case 'beforeToolCallEvent':
+ *         return myBackend.startSpan('tool', { name: event.toolUse.name })
+ *     }
+ *   }
+ *   endSpan(span, event) {
+ *     if ('error' in event && event.error) myBackend.setError(span, event.error)
+ *     myBackend.endSpan(span)
+ *   }
  * }
  *
  * const agent = new Agent({
@@ -30,10 +44,14 @@ import {
   BeforeToolCallEvent,
   AfterToolCallEvent,
   AfterToolsEvent,
-  type AccumulatedUsage,
 } from '../hooks/events.js'
 import type { ITracer, TracerSpanHandle } from './tracer-interface.js'
+import type { Tracer, ActiveSpanHandle } from './tracer.js'
 import type { Span } from '@opentelemetry/api'
+import type { Usage } from './types.js'
+import { createEmptyUsage, accumulateUsage } from './utils.js'
+import { logger } from '../logging/index.js'
+
 
 /**
  * Configuration options for TracerHookAdapter.
@@ -48,278 +66,154 @@ export interface TracerHookAdapterConfig {
 }
 
 /**
- * Creates an empty accumulated usage object.
- */
-function createEmptyUsage(): AccumulatedUsage {
-  return {
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0,
-    cacheReadInputTokens: 0,
-    cacheWriteInputTokens: 0,
-  }
-}
-
-/**
  * Adapter that wires an ITracer implementation to the agent's hook system.
  *
  * This allows users to implement a simple ITracer interface for custom
  * tracing backends without needing to understand the hooks system.
  *
- * @example
- * ```typescript
- * // Implement ITracer with your custom backend
- * class DatadogTracer implements ITracer {
- *   startAgentSpan(params) {
- *     return dd.startSpan('strands.agent.invoke', {
- *       tags: {
- *         'agent.name': params.agentName,
- *         'model.id': params.modelId,
- *       }
- *     })
- *   }
+ * The default Tracer uses startActiveSpan for automatic context propagation.
+ * Child spans automatically parent to the current active span without
+ * manual tracking.
  *
- *   endAgentSpan(span, params) {
- *     if (params.error) {
- *       span.setTag('error', true)
- *       span.setTag('error.message', params.error.message)
- *     }
- *     if (params.usage) {
- *       span.setTag('tokens.total', params.usage.totalTokens)
- *     }
- *     span.finish()
- *   }
- *
- *   // Implement other methods as needed...
- * }
- *
- * // Use with agent
- * const agent = new Agent({
- *   model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
- *   hooks: [new TracerHookAdapter(new DatadogTracer())]
- * })
- * ```
+ * Cycle spans are handled internally by this adapter when using the default
+ * Tracer implementation. Custom ITracer implementations do not need to
+ * implement cycle span methods.
  */
 export class TracerHookAdapter implements HookProvider {
   private readonly _tracer: ITracer
   private readonly _enableCycleSpans: boolean
 
-  // Span state
-  private _agentSpan: TracerSpanHandle | undefined
-  private _cycleSpan: TracerSpanHandle | undefined
-  private _cycleCount: number = 0
-  private _modelSpan: TracerSpanHandle | undefined
-  private readonly _toolSpans: Map<string, TracerSpanHandle> = new Map()
-  private _accumulatedUsage: AccumulatedUsage = createEmptyUsage()
+  // Span state - stored for ending spans later
+  protected _agentSpan: TracerSpanHandle | undefined
+  protected _cycleSpan: ActiveSpanHandle | undefined
+  protected _cycleCount: number = 0
+  protected _modelSpan: TracerSpanHandle | undefined
+  protected readonly _toolSpans: Map<string, TracerSpanHandle> = new Map()
+  private _accumulatedUsage: Usage = createEmptyUsage()
 
-  /**
-   * Creates a new TracerHookAdapter.
-   *
-   * @param tracer - The ITracer implementation to delegate to
-   * @param config - Optional configuration options
-   */
   constructor(tracer: ITracer, config?: TracerHookAdapterConfig) {
     this._tracer = tracer
     this._enableCycleSpans = config?.enableCycleSpans ?? true
+
+    // Warn if startSpan is implemented but endSpan is not - this will corrupt trace structure
+    if (this._tracer.startSpan && !this._tracer.endSpan) {
+      logger.warn(
+        'tracer_config=<incomplete> | startSpan is implemented but endSpan is not | ' +
+          'this will corrupt trace structure - spans will not be closed properly'
+      )
+      console.warn(
+        '[Telemetry] Warning: Your ITracer implements startSpan but not endSpan. ' +
+          'This will corrupt the trace structure. You MUST implement endSpan to close spans properly.'
+      )
+    }
   }
 
-  /**
-   * Register telemetry callbacks with the hook registry.
-   *
-   * @param registry - The hook registry to register callbacks with
-   */
   registerCallbacks(registry: HookRegistry): void {
-    // Agent lifecycle
     registry.addCallback(BeforeInvocationEvent, this._onBeforeInvocation)
     registry.addCallback(AfterInvocationEvent, this._onAfterInvocation)
-
-    // Model lifecycle
     registry.addCallback(BeforeModelCallEvent, this._onBeforeModelCall)
     registry.addCallback(AfterModelCallEvent, this._onAfterModelCall)
-
-    // Tool lifecycle
     registry.addCallback(BeforeToolCallEvent, this._onBeforeToolCall)
     registry.addCallback(AfterToolCallEvent, this._onAfterToolCall)
 
-    // Only register AfterToolsEvent if cycle spans are enabled
     if (this._enableCycleSpans) {
       registry.addCallback(AfterToolsEvent, this._onAfterTools)
     }
   }
 
-  /**
-   * Handle BeforeInvocationEvent - start agent span.
-   */
+
   private _onBeforeInvocation = (event: BeforeInvocationEvent): void => {
-    // Reset state for new invocation
     this._accumulatedUsage = createEmptyUsage()
     this._toolSpans.clear()
     this._modelSpan = undefined
     this._cycleSpan = undefined
     this._cycleCount = 0
 
-    if (!this._tracer.startAgentSpan) {
-      return
-    }
+    if (!this._tracer.startSpan) return
 
-    // Get model ID from agent
-    const modelConfig = event.agent.model.getConfig()
-    const modelId = modelConfig.modelId || event.agent.model.constructor.name
-
-    this._agentSpan = this._tracer.startAgentSpan({
-      agentName: event.agent.name,
-      agentId: event.agent.agentId,
-      modelId,
-      inputMessages: event.inputMessages,
-      tools: event.agent.tools,
-      systemPrompt: event.agent.systemPrompt,
-    })
+    // Start agent span - becomes the current span in context
+    this._agentSpan = this._tracer.startSpan(event)
   }
 
-  /**
-   * Handle AfterInvocationEvent - end agent span.
-   */
   private _onAfterInvocation = (event: AfterInvocationEvent): void => {
-    if (!this._agentSpan || !this._tracer.endAgentSpan) {
-      return
-    }
+    if (!this._agentSpan || !this._tracer.endSpan) return
 
-    // Use accumulated usage from event if provided, otherwise use our tracked usage
     const usage = event.accumulatedUsage ?? this._accumulatedUsage
 
-    this._tracer.endAgentSpan(this._agentSpan, {
-      response: event.result?.message,
-      stopReason: event.result?.stopReason,
-      error: event.error,
-      usage,
-    })
-
+    this._tracer.endSpan(this._agentSpan, event, { accumulatedUsage: usage })
     this._agentSpan = undefined
   }
 
-  /**
-   * Handle BeforeModelCallEvent - start cycle span (if needed) and model span.
-   */
   private _onBeforeModelCall = (event: BeforeModelCallEvent): void => {
-    // Start a new cycle span if cycle spans are enabled and we don't have one
-    if (this._enableCycleSpans && !this._cycleSpan && this._tracer.startCycleSpan) {
-      this._cycleCount++
-      const cycleId = `cycle-${this._cycleCount}`
-
-      this._cycleSpan = this._tracer.startCycleSpan({
-        cycleId,
-        messages: event.agent.messages,
-        parentSpan: this._agentSpan,
-      })
+    // Start cycle span if needed - only works with the default Tracer implementation
+    if (this._enableCycleSpans && !this._cycleSpan) {
+      const tracerWithCycleSpan = this._tracer as Tracer
+      if (typeof tracerWithCycleSpan.startCycleSpan === 'function') {
+        this._cycleCount++
+        this._cycleSpan = tracerWithCycleSpan.startCycleSpan(event, `cycle-${this._cycleCount}`)
+      }
     }
 
-    if (!this._tracer.startModelSpan) {
-      return
-    }
+    if (!this._tracer.startSpan) return
 
-    // Get model ID from agent
-    const modelConfig = event.agent.model.getConfig()
-    const modelId = modelConfig.modelId || event.agent.model.constructor.name
-
-    // Start model span as child of cycle span (if enabled) or agent span
-    const parentSpan = this._enableCycleSpans ? (this._cycleSpan ?? this._agentSpan) : this._agentSpan
-
-    this._modelSpan = this._tracer.startModelSpan({
-      modelId,
-      messages: event.agent.messages,
-      parentSpan,
-    })
+    // Start model span - auto-parents to cycle span (or agent span) via context
+    this._modelSpan = this._tracer.startSpan(event)
   }
 
-  /**
-   * Handle AfterModelCallEvent - end model span and accumulate usage.
-   */
   private _onAfterModelCall = (event: AfterModelCallEvent): void => {
-    // Accumulate usage if provided
     if (event.usage) {
-      this._accumulatedUsage.inputTokens += event.usage.inputTokens
-      this._accumulatedUsage.outputTokens += event.usage.outputTokens
-      this._accumulatedUsage.totalTokens += event.usage.totalTokens
-      this._accumulatedUsage.cacheReadInputTokens += event.usage.cacheReadInputTokens ?? 0
-      this._accumulatedUsage.cacheWriteInputTokens += event.usage.cacheWriteInputTokens ?? 0
+      accumulateUsage(this._accumulatedUsage, event.usage)
     }
 
-    // End model span
-    if (this._modelSpan && this._tracer.endModelSpan) {
-      this._tracer.endModelSpan(this._modelSpan, {
-        response: event.stopData?.message,
-        stopReason: event.stopData?.stopReason,
-        error: event.error,
-        usage: event.usage,
-        metrics: event.metrics,
-      })
+    if (this._modelSpan && this._tracer.endSpan) {
+      this._tracer.endSpan(this._modelSpan, event)
       this._modelSpan = undefined
     }
 
-    // If cycle spans are enabled and stopReason is not 'toolUse', end cycle span
+    // End cycle span if not continuing to tools
     if (this._enableCycleSpans && event.stopData?.stopReason !== 'toolUse' && this._cycleSpan) {
-      if (this._tracer.endCycleSpan) {
-        this._tracer.endCycleSpan(this._cycleSpan, {
-          response: event.stopData?.message,
-        })
+      const tracerWithCycleSpan = this._tracer as Tracer
+      if (typeof tracerWithCycleSpan.endCycleSpan === 'function') {
+        tracerWithCycleSpan.endCycleSpan(this._cycleSpan, event)
       }
       this._cycleSpan = undefined
     }
   }
 
-  /**
-   * Handle BeforeToolCallEvent - start tool span.
-   */
+
   private _onBeforeToolCall = (event: BeforeToolCallEvent): void => {
-    if (!this._tracer.startToolSpan) {
-      return
-    }
+    if (!this._tracer.startSpan) return
 
-    // Use cycle span as parent if enabled, otherwise use agent span
-    const parentSpan = this._enableCycleSpans ? (this._cycleSpan ?? this._agentSpan) : this._agentSpan
-
-    const toolSpan = this._tracer.startToolSpan({
-      toolName: event.toolUse.name,
-      toolUseId: event.toolUse.toolUseId,
-      input: event.toolUse.input,
-      parentSpan,
-    })
+    // Start tool span - auto-parents to cycle span (or agent span) via context
+    const toolSpan = this._tracer.startSpan(event)
 
     if (toolSpan !== undefined) {
       this._toolSpans.set(event.toolUse.toolUseId, toolSpan)
 
-      // If the span is an OTEL Span, set it as active for context propagation
-      if (toolSpan && typeof toolSpan === 'object' && 'spanContext' in toolSpan) {
-        event.setActiveSpan(toolSpan as Span)
+      // If the span handle contains an OTEL Span, set it as active for MCP context propagation
+      if (toolSpan && typeof toolSpan === 'object' && 'span' in toolSpan) {
+        const handle = toolSpan as { span: Span }
+        if (handle.span && typeof handle.span === 'object' && 'spanContext' in handle.span) {
+          event.setActiveSpan(handle.span)
+        }
       }
     }
   }
 
-  /**
-   * Handle AfterToolCallEvent - end tool span.
-   */
   private _onAfterToolCall = (event: AfterToolCallEvent): void => {
     const toolSpan = this._toolSpans.get(event.toolUse.toolUseId)
-    if (!toolSpan || !this._tracer.endToolSpan) {
-      return
-    }
+    if (!toolSpan || !this._tracer.endSpan) return
 
-    this._tracer.endToolSpan(toolSpan, {
-      result: event.result,
-      error: event.error,
-    })
-
+    this._tracer.endSpan(toolSpan, event)
     this._toolSpans.delete(event.toolUse.toolUseId)
   }
 
-  /**
-   * Handle AfterToolsEvent - end cycle span after all tools complete.
-   */
   private _onAfterTools = (event: AfterToolsEvent): void => {
-    if (this._cycleSpan && this._tracer.endCycleSpan) {
-      this._tracer.endCycleSpan(this._cycleSpan, {
-        toolResultMessage: event.message,
-      })
+    if (this._cycleSpan) {
+      const tracerWithCycleSpan = this._tracer as Tracer
+      if (typeof tracerWithCycleSpan.endCycleSpan === 'function') {
+        tracerWithCycleSpan.endCycleSpan(this._cycleSpan, event)
+      }
       this._cycleSpan = undefined
     }
   }
@@ -328,7 +222,7 @@ export class TracerHookAdapter implements HookProvider {
    * Get the accumulated usage (for testing/debugging).
    * @internal
    */
-  get accumulatedUsage(): AccumulatedUsage {
+  get accumulatedUsage(): Usage {
     return { ...this._accumulatedUsage }
   }
 

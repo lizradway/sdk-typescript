@@ -1,5 +1,6 @@
-import { describe, expect, it, beforeEach } from 'vitest'
-import { Agent, tool } from '@strands-agents/sdk'
+import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import { Agent, tool, StrandsTelemetry } from '@strands-agents/sdk'
+import { _resetGlobalTelemetryHookProvider, _resetTracerProvider } from '$/sdk/telemetry/config.js'
 import { z } from 'zod'
 import { collectGenerator } from '$/sdk/__fixtures__/model-test-helpers.js'
 import { bedrock } from './__fixtures__/model-providers.js'
@@ -17,18 +18,22 @@ const testTool = tool({
 })
 
 describe('Agent Telemetry Integration', () => {
-  beforeEach(() => {
-    // Setup for each test
-  })
-
   describe('Agent with telemetry enabled', () => {
+    beforeEach(() => {
+      // Enable telemetry by instantiating StrandsTelemetry
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      // Reset global telemetry state
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('initializes tracer when telemetry is enabled', async () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       // Verify agent was created successfully
@@ -40,9 +45,6 @@ describe('Agent Telemetry Integration', () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       // Invoke agent with a simple prompt
@@ -58,9 +60,6 @@ describe('Agent Telemetry Integration', () => {
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       // Verify agent was created successfully
@@ -86,9 +85,6 @@ describe('Agent Telemetry Integration', () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
         customTraceAttributes: customAttributes,
       })
 
@@ -98,20 +94,13 @@ describe('Agent Telemetry Integration', () => {
   })
 
   describe('Agent with telemetry disabled', () => {
-    it('does not create tracer when telemetry is disabled', async () => {
-      const agent = new Agent({
-        model: bedrock.createModel(),
-        printer: false,
-        telemetryConfig: {
-          enabled: false,
-        },
-      })
-
-      // Verify agent was created successfully
-      expect(agent).toBeDefined()
+    beforeEach(() => {
+      // Ensure telemetry is disabled by resetting global state
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
     })
 
-    it('does not create tracer when telemetry config is not provided', async () => {
+    it('does not create tracer when StrandsTelemetry is not instantiated', async () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
@@ -137,27 +126,21 @@ describe('Agent Telemetry Integration', () => {
   })
 
   describe('Agent telemetry configuration', () => {
-    it('accepts telemetry config in agent constructor', async () => {
-      const agent = new Agent({
-        model: bedrock.createModel(),
-        printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
-      })
+    beforeEach(() => {
+      // Enable telemetry by instantiating StrandsTelemetry
+      new StrandsTelemetry()
+    })
 
-      // Verify agent was created successfully with telemetry config
-      expect(agent).toBeDefined()
-      expect(agent.messages).toBeDefined()
+    afterEach(() => {
+      // Reset global telemetry state
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
     })
 
     it('accepts custom trace attributes in agent constructor', async () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
         customTraceAttributes: {
           'app.version': '1.0.0',
           'app.environment': 'test',
@@ -170,14 +153,22 @@ describe('Agent Telemetry Integration', () => {
   })
 
   describe('Comprehensive end-to-end telemetry', () => {
+    beforeEach(() => {
+      // Enable telemetry by instantiating StrandsTelemetry
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      // Reset global telemetry state
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('creates complete span hierarchy for agent with tool use', async () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       // Invoke agent with a prompt that uses the tool
@@ -206,42 +197,25 @@ describe('Agent Telemetry Integration', () => {
       }
     })
 
-    it('handles telemetry with model configuration', async () => {
-      const agent = new Agent({
-        model: bedrock.createModel({
-          telemetryConfig: {
-            enabled: true,
-          },
-        }),
-        printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
-      })
-
-      // Invoke agent
-      const { items, result } = await collectGenerator(agent.stream('Say hello'))
-
-      // Verify we got events and a result
-      expect(items.length).toBeGreaterThan(0)
-      expect(result).toBeDefined()
-    })
-
     it('telemetry does not interfere with normal agent operation', async () => {
       const agentWithTelemetry = new Agent({
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-        },
       })
+
+      // Reset telemetry for second agent
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
 
       const agentWithoutTelemetry = new Agent({
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
       })
+
+      // Re-enable telemetry for first agent's invocation
+      new StrandsTelemetry()
 
       // Both agents should work
       const { result: result1 } = await collectGenerator(agentWithTelemetry.stream('Say hello'))
@@ -257,13 +231,10 @@ describe('Agent Telemetry Integration', () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
-      // Before invocation, trace span should be null (no span yet)
-      expect(agent.traceSpan).toBeNull()
+      // Before invocation, trace span should be undefined (no span yet)
+      expect(agent.traceSpan).toBeUndefined()
 
       // Invoke agent
       const { result } = await collectGenerator(agent.stream('Say hello'))
@@ -279,12 +250,13 @@ describe('Agent Telemetry Integration', () => {
     })
 
     it('trace span is undefined when telemetry is disabled', async () => {
+      // Reset telemetry to disable it
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: false,
-        },
       })
 
       // Invoke agent
@@ -297,13 +269,21 @@ describe('Agent Telemetry Integration', () => {
   })
 
   describe('Span attribute verification', () => {
+    beforeEach(() => {
+      // Enable telemetry by instantiating StrandsTelemetry
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      // Reset global telemetry state
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('verifies model ID is captured in model invocation spans', async () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       // Invoke agent
@@ -321,9 +301,6 @@ describe('Agent Telemetry Integration', () => {
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       // Invoke agent with tool use
@@ -341,9 +318,6 @@ describe('Agent Telemetry Integration', () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       // Invoke agent
@@ -359,9 +333,6 @@ describe('Agent Telemetry Integration', () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       // Invoke agent
@@ -376,14 +347,22 @@ describe('Agent Telemetry Integration', () => {
   })
 
   describe('Span hierarchy verification', () => {
+    beforeEach(() => {
+      // Enable telemetry by instantiating StrandsTelemetry
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      // Reset global telemetry state
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('verifies parent-child relationships between spans', async () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
         tools: [testTool],
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       // Invoke agent with tool use
@@ -398,7 +377,19 @@ describe('Agent Telemetry Integration', () => {
     })
   })
 
+
   describe('Error handling with telemetry', () => {
+    beforeEach(() => {
+      // Enable telemetry by instantiating StrandsTelemetry
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      // Reset global telemetry state
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('handles errors gracefully with telemetry enabled', async () => {
       const errorTool = tool({
         name: 'error_tool',
@@ -413,9 +404,6 @@ describe('Agent Telemetry Integration', () => {
         model: bedrock.createModel(),
         printer: false,
         tools: [errorTool],
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       // Invoke agent with tool that errors
@@ -432,21 +420,26 @@ describe('Agent Telemetry Integration', () => {
   })
 
   describe('Concurrent invocations with telemetry', () => {
+    beforeEach(() => {
+      // Enable telemetry by instantiating StrandsTelemetry
+      new StrandsTelemetry()
+    })
+
+    afterEach(() => {
+      // Reset global telemetry state
+      _resetGlobalTelemetryHookProvider()
+      _resetTracerProvider()
+    })
+
     it('handles multiple concurrent agent invocations', async () => {
       const agent1 = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       const agent2 = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        telemetryConfig: {
-          enabled: true,
-        },
       })
 
       // Run both agents concurrently

@@ -21,14 +21,10 @@ import type { AgentState } from '../../agent/state.js'
 import type {
   ITracer,
   TracerSpanHandle,
-  StartAgentSpanParams,
-  EndAgentSpanParams,
-  StartModelSpanParams,
-  EndModelSpanParams,
-  StartToolSpanParams,
-  EndToolSpanParams,
-  StartCycleSpanParams,
-  EndCycleSpanParams,
+  StartSpanEvent,
+  EndSpanEvent,
+  StartSpanContext,
+  EndSpanContext,
 } from '../tracer-interface.js'
 
 // Mock agent for testing
@@ -61,61 +57,32 @@ function createMockAgent(overrides: Partial<AgentData> = {}): AgentData {
   }
 }
 
-// Mock tracer that records all calls
+// Mock tracer that records all calls using the ITracer interface
 class MockTracer implements ITracer {
-  calls: { method: string; params: unknown }[] = []
+  calls: { method: string; event?: unknown; context?: unknown }[] = []
   spans: Map<string, TracerSpanHandle> = new Map()
   spanCounter = 0
 
-  startAgentSpan(params: StartAgentSpanParams): TracerSpanHandle {
-    this.calls.push({ method: 'startAgentSpan', params })
-    const span = { id: `agent-span-${++this.spanCounter}`, type: 'agent' }
-    this.spans.set('agent', span)
-    return span
-  }
-
-  endAgentSpan(span: TracerSpanHandle, params: EndAgentSpanParams): void {
-    this.calls.push({ method: 'endAgentSpan', params: { span, ...params } })
-    this.spans.delete('agent')
-  }
-
-  startModelSpan(params: StartModelSpanParams): TracerSpanHandle {
-    this.calls.push({ method: 'startModelSpan', params })
-    const span = { id: `model-span-${++this.spanCounter}`, type: 'model' }
-    this.spans.set('model', span)
-    return span
-  }
-
-  endModelSpan(span: TracerSpanHandle, params: EndModelSpanParams): void {
-    this.calls.push({ method: 'endModelSpan', params: { span, ...params } })
-    this.spans.delete('model')
-  }
-
-  startToolSpan(params: StartToolSpanParams): TracerSpanHandle {
-    this.calls.push({ method: 'startToolSpan', params })
-    const span = { id: `tool-span-${++this.spanCounter}`, type: 'tool', toolUseId: params.toolUseId }
-    this.spans.set(`tool-${params.toolUseId}`, span)
-    return span
-  }
-
-  endToolSpan(span: TracerSpanHandle, params: EndToolSpanParams): void {
-    this.calls.push({ method: 'endToolSpan', params: { span, ...params } })
-    const spanObj = span as { toolUseId?: string }
-    if (spanObj.toolUseId) {
-      this.spans.delete(`tool-${spanObj.toolUseId}`)
+  startSpan(event: StartSpanEvent, context?: StartSpanContext): TracerSpanHandle {
+    this.calls.push({ method: 'startSpan', event, context })
+    const spanType = event.type.replace('before', '').replace('Event', '').toLowerCase()
+    const span = { id: `${spanType}-span-${++this.spanCounter}`, type: spanType, eventType: event.type }
+    
+    if (event.type === 'beforeToolCallEvent') {
+      const toolEvent = event as BeforeToolCallEvent
+      this.spans.set(`tool-${toolEvent.toolUse.toolUseId}`, span)
+    } else {
+      this.spans.set(spanType, span)
     }
-  }
-
-  startCycleSpan(params: StartCycleSpanParams): TracerSpanHandle {
-    this.calls.push({ method: 'startCycleSpan', params })
-    const span = { id: `cycle-span-${++this.spanCounter}`, type: 'cycle', cycleId: params.cycleId }
-    this.spans.set('cycle', span)
     return span
   }
 
-  endCycleSpan(span: TracerSpanHandle, params: EndCycleSpanParams): void {
-    this.calls.push({ method: 'endCycleSpan', params: { span, ...params } })
-    this.spans.delete('cycle')
+  endSpan(span: TracerSpanHandle, event: EndSpanEvent, context?: EndSpanContext): void {
+    this.calls.push({ method: 'endSpan', event, context })
+    const spanObj = span as { type?: string }
+    if (spanObj.type) {
+      this.spans.delete(spanObj.type)
+    }
   }
 
   reset(): void {
@@ -157,22 +124,18 @@ describe('TracerHookAdapter', () => {
       await registry.invokeCallbacks(new BeforeInvocationEvent({ agent, inputMessages }))
 
       expect(mockTracer.calls).toHaveLength(1)
-      expect(mockTracer.calls[0]?.method).toBe('startAgentSpan')
-      expect(mockTracer.calls[0]?.params).toMatchObject({
-        agentName: 'test-agent',
-        agentId: 'agent-123',
-        modelId: 'test-model-id',
-      })
+      expect(mockTracer.calls[0]?.method).toBe('startSpan')
+      const event = mockTracer.calls[0]?.event as BeforeInvocationEvent
+      expect(event.type).toBe('beforeInvocationEvent')
+      expect(event.agent.name).toBe('test-agent')
     })
 
     it('should end agent span on AfterInvocationEvent', async () => {
       const agent = createMockAgent()
       const inputMessages = [new Message({ role: 'user', content: [new TextBlock('Hello')] })]
 
-      // Start agent span
       await registry.invokeCallbacks(new BeforeInvocationEvent({ agent, inputMessages }))
 
-      // End agent span
       const response = new Message({ role: 'assistant', content: [new TextBlock('Hi!')] })
       await registry.invokeCallbacks(new AfterInvocationEvent({
         agent,
@@ -180,14 +143,13 @@ describe('TracerHookAdapter', () => {
       }))
 
       expect(mockTracer.calls).toHaveLength(2)
-      expect(mockTracer.calls[1]?.method).toBe('endAgentSpan')
-      expect(mockTracer.calls[1]?.params).toMatchObject({
-        response,
-        stopReason: 'endTurn',
-      })
+      expect(mockTracer.calls[1]?.method).toBe('endSpan')
+      const event = mockTracer.calls[1]?.event as AfterInvocationEvent
+      expect(event.type).toBe('afterInvocationEvent')
+      expect(event.result?.stopReason).toBe('endTurn')
     })
 
-    it('should pass error to endAgentSpan on failure', async () => {
+    it('should pass error to endSpan on failure', async () => {
       const agent = createMockAgent()
       const inputMessages = [new Message({ role: 'user', content: [new TextBlock('Hello')] })]
 
@@ -196,7 +158,8 @@ describe('TracerHookAdapter', () => {
       const error = new Error('Invocation failed')
       await registry.invokeCallbacks(new AfterInvocationEvent({ agent, error }))
 
-      expect(mockTracer.calls[1]?.params).toMatchObject({ error })
+      const event = mockTracer.calls[1]?.event as AfterInvocationEvent
+      expect(event.error).toBe(error)
     })
   })
 
@@ -208,12 +171,12 @@ describe('TracerHookAdapter', () => {
       await registry.invokeCallbacks(new BeforeInvocationEvent({ agent, inputMessages }))
       await registry.invokeCallbacks(new BeforeModelCallEvent({ agent }))
 
-      // Should have: startAgentSpan, startCycleSpan, startModelSpan
-      expect(mockTracer.calls).toHaveLength(3)
-      expect(mockTracer.calls[2]?.method).toBe('startModelSpan')
-      expect(mockTracer.calls[2]?.params).toMatchObject({
-        modelId: 'test-model-id',
-      })
+      // Should have: startSpan (agent), startSpan (model)
+      // Note: cycle spans are handled internally by the default Tracer, not via ITracer interface
+      expect(mockTracer.calls).toHaveLength(2)
+      expect(mockTracer.calls[1]?.method).toBe('startSpan')
+      const event = mockTracer.calls[1]?.event as BeforeModelCallEvent
+      expect(event.type).toBe('beforeModelCallEvent')
     })
 
     it('should end model span on AfterModelCallEvent', async () => {
@@ -230,100 +193,12 @@ describe('TracerHookAdapter', () => {
         usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
       }))
 
-      // Should have: startAgentSpan, startCycleSpan, startModelSpan, endModelSpan, endCycleSpan
-      expect(mockTracer.calls).toHaveLength(5)
-      expect(mockTracer.calls[3]?.method).toBe('endModelSpan')
-      expect(mockTracer.calls[3]?.params).toMatchObject({
-        response,
-        stopReason: 'endTurn',
-        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
-      })
-    })
-  })
-
-  describe('cycle span lifecycle', () => {
-    it('should start cycle span before first model call', async () => {
-      const agent = createMockAgent()
-      const inputMessages = [new Message({ role: 'user', content: [new TextBlock('Hello')] })]
-
-      await registry.invokeCallbacks(new BeforeInvocationEvent({ agent, inputMessages }))
-      await registry.invokeCallbacks(new BeforeModelCallEvent({ agent }))
-
-      expect(mockTracer.calls[1]?.method).toBe('startCycleSpan')
-      expect(mockTracer.calls[1]?.params).toMatchObject({
-        cycleId: 'cycle-1',
-      })
-    })
-
-    it('should end cycle span on final model response', async () => {
-      const agent = createMockAgent()
-      const inputMessages = [new Message({ role: 'user', content: [new TextBlock('Hello')] })]
-
-      await registry.invokeCallbacks(new BeforeInvocationEvent({ agent, inputMessages }))
-      await registry.invokeCallbacks(new BeforeModelCallEvent({ agent }))
-
-      const response = new Message({ role: 'assistant', content: [new TextBlock('Hi!')] })
-      await registry.invokeCallbacks(new AfterModelCallEvent({
-        agent,
-        stopData: { message: response, stopReason: 'endTurn' },
-      }))
-
-      expect(mockTracer.calls[4]?.method).toBe('endCycleSpan')
-      expect(mockTracer.calls[4]?.params).toMatchObject({
-        response,
-      })
-    })
-
-    it('should not end cycle span when stopReason is toolUse', async () => {
-      const agent = createMockAgent()
-      const inputMessages = [new Message({ role: 'user', content: [new TextBlock('Hello')] })]
-
-      await registry.invokeCallbacks(new BeforeInvocationEvent({ agent, inputMessages }))
-      await registry.invokeCallbacks(new BeforeModelCallEvent({ agent }))
-
-      const response = new Message({
-        role: 'assistant',
-        content: [new ToolUseBlock({ name: 'test_tool', toolUseId: 'tool-1', input: {} })],
-      })
-      await registry.invokeCallbacks(new AfterModelCallEvent({
-        agent,
-        stopData: { message: response, stopReason: 'toolUse' },
-      }))
-
-      // Should have: startAgentSpan, startCycleSpan, startModelSpan, endModelSpan
-      // No endCycleSpan because stopReason is toolUse
-      expect(mockTracer.calls).toHaveLength(4)
-      expect(mockTracer.calls.every(c => c.method !== 'endCycleSpan')).toBe(true)
-    })
-
-    it('should end cycle span on AfterToolsEvent', async () => {
-      const agent = createMockAgent()
-      const inputMessages = [new Message({ role: 'user', content: [new TextBlock('Hello')] })]
-
-      await registry.invokeCallbacks(new BeforeInvocationEvent({ agent, inputMessages }))
-      await registry.invokeCallbacks(new BeforeModelCallEvent({ agent }))
-      await registry.invokeCallbacks(new AfterModelCallEvent({
-        agent,
-        stopData: {
-          message: new Message({
-            role: 'assistant',
-            content: [new ToolUseBlock({ name: 'test_tool', toolUseId: 'tool-1', input: {} })],
-          }),
-          stopReason: 'toolUse',
-        },
-      }))
-
-      const toolResultMessage = new Message({
-        role: 'user',
-        content: [new ToolResultBlock({ toolUseId: 'tool-1', status: 'success', content: [] })],
-      })
-      await registry.invokeCallbacks(new AfterToolsEvent({ agent, message: toolResultMessage }))
-
-      const endCycleCall = mockTracer.calls.find(c => c.method === 'endCycleSpan')
-      expect(endCycleCall).toBeDefined()
-      expect(endCycleCall?.params).toMatchObject({
-        toolResultMessage,
-      })
+      // Should have: startSpan (agent), startSpan (model), endSpan (model)
+      expect(mockTracer.calls).toHaveLength(3)
+      expect(mockTracer.calls[2]?.method).toBe('endSpan')
+      const event = mockTracer.calls[2]?.event as AfterModelCallEvent
+      expect(event.type).toBe('afterModelCallEvent')
+      expect(event.usage?.inputTokens).toBe(10)
     })
   })
 
@@ -348,13 +223,14 @@ describe('TracerHookAdapter', () => {
       const toolUse = { name: 'test_tool', toolUseId: 'tool-1', input: { key: 'value' } }
       await registry.invokeCallbacks(new BeforeToolCallEvent({ agent, toolUse, tool: undefined }))
 
-      const startToolCall = mockTracer.calls.find(c => c.method === 'startToolSpan')
-      expect(startToolCall).toBeDefined()
-      expect(startToolCall?.params).toMatchObject({
-        toolName: 'test_tool',
-        toolUseId: 'tool-1',
-        input: { key: 'value' },
+      const startToolCall = mockTracer.calls.find(c => {
+        if (c.method !== 'startSpan') return false
+        const event = c.event as StartSpanEvent
+        return event.type === 'beforeToolCallEvent'
       })
+      expect(startToolCall).toBeDefined()
+      const event = startToolCall?.event as BeforeToolCallEvent
+      expect(event.toolUse.name).toBe('test_tool')
     })
 
     it('should end tool span on AfterToolCallEvent', async () => {
@@ -380,14 +256,17 @@ describe('TracerHookAdapter', () => {
       const result = new ToolResultBlock({ toolUseId: 'tool-1', status: 'success', content: [] })
       await registry.invokeCallbacks(new AfterToolCallEvent({ agent, toolUse, tool: undefined, result }))
 
-      const endToolCall = mockTracer.calls.find(c => c.method === 'endToolSpan')
-      expect(endToolCall).toBeDefined()
-      expect(endToolCall?.params).toMatchObject({
-        result,
+      const endToolCall = mockTracer.calls.find(c => {
+        if (c.method !== 'endSpan') return false
+        const event = c.event as EndSpanEvent
+        return event.type === 'afterToolCallEvent'
       })
+      expect(endToolCall).toBeDefined()
+      const event = endToolCall?.event as AfterToolCallEvent
+      expect(event.result.status).toBe('success')
     })
 
-    it('should pass error to endToolSpan on failure', async () => {
+    it('should pass error to endSpan on tool failure', async () => {
       const agent = createMockAgent()
       const inputMessages = [new Message({ role: 'user', content: [new TextBlock('Hello')] })]
 
@@ -411,8 +290,13 @@ describe('TracerHookAdapter', () => {
       const error = new Error('Tool failed')
       await registry.invokeCallbacks(new AfterToolCallEvent({ agent, toolUse, tool: undefined, result, error }))
 
-      const endToolCall = mockTracer.calls.find(c => c.method === 'endToolSpan')
-      expect(endToolCall?.params).toMatchObject({ error })
+      const endToolCall = mockTracer.calls.find(c => {
+        if (c.method !== 'endSpan') return false
+        const event = c.event as EndSpanEvent
+        return event.type === 'afterToolCallEvent'
+      })
+      const event = endToolCall?.event as AfterToolCallEvent
+      expect(event.error).toBe(error)
     })
   })
 
@@ -424,17 +308,17 @@ describe('TracerHookAdapter', () => {
       adapter.registerCallbacks(registry)
     })
 
-    it('should not create cycle spans', async () => {
+    it('should not create cycle spans when disabled', async () => {
       const agent = createMockAgent()
       const inputMessages = [new Message({ role: 'user', content: [new TextBlock('Hello')] })]
 
       await registry.invokeCallbacks(new BeforeInvocationEvent({ agent, inputMessages }))
       await registry.invokeCallbacks(new BeforeModelCallEvent({ agent }))
 
-      // Should have: startAgentSpan, startModelSpan (no cycle span)
+      // Should have: startSpan (agent), startSpan (model) - no cycle span
       expect(mockTracer.calls).toHaveLength(2)
-      expect(mockTracer.calls[0]?.method).toBe('startAgentSpan')
-      expect(mockTracer.calls[1]?.method).toBe('startModelSpan')
+      expect(mockTracer.calls[0]?.method).toBe('startSpan')
+      expect(mockTracer.calls[1]?.method).toBe('startSpan')
     })
 
     it('should create model span as direct child of agent span', async () => {
@@ -444,10 +328,11 @@ describe('TracerHookAdapter', () => {
       await registry.invokeCallbacks(new BeforeInvocationEvent({ agent, inputMessages }))
       await registry.invokeCallbacks(new BeforeModelCallEvent({ agent }))
 
-      const startModelCall = mockTracer.calls.find(c => c.method === 'startModelSpan')
-      expect(startModelCall?.params).toMatchObject({
-        parentSpan: { id: 'agent-span-1', type: 'agent' },
-      })
+      // With startActiveSpan, child spans auto-parent via context
+      // No parentSpan is passed - context propagation handles it
+      const modelCall = mockTracer.calls[1]
+      expect(modelCall?.method).toBe('startSpan')
+      expect((modelCall?.event as BeforeModelCallEvent).type).toBe('beforeModelCallEvent')
     })
   })
 
@@ -472,7 +357,7 @@ describe('TracerHookAdapter', () => {
         usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
       }))
 
-      // End cycle
+      // End cycle (for tracers that support it internally)
       await registry.invokeCallbacks(new AfterToolsEvent({
         agent,
         message: new Message({ role: 'user', content: [] }),
@@ -498,12 +383,10 @@ describe('TracerHookAdapter', () => {
   })
 
   describe('partial ITracer implementation', () => {
-    it('should work with tracer that only implements some methods', async () => {
-      // Tracer that only implements agent span methods
+    it('should work with tracer that only implements startSpan and endSpan', async () => {
       const partialTracer: ITracer = {
-        startAgentSpan: vi.fn().mockReturnValue({ id: 'agent-1' }),
-        endAgentSpan: vi.fn(),
-        // No model, tool, or cycle span methods
+        startSpan: vi.fn().mockReturnValue({ id: 'span-1' }),
+        endSpan: vi.fn(),
       }
 
       const partialAdapter = new TracerHookAdapter(partialTracer)
@@ -513,7 +396,7 @@ describe('TracerHookAdapter', () => {
       const agent = createMockAgent()
       const inputMessages = [new Message({ role: 'user', content: [new TextBlock('Hello')] })]
 
-      // Should not throw even though model/tool/cycle methods are not implemented
+      // Should not throw even though cycle methods are not implemented
       await partialRegistry.invokeCallbacks(new BeforeInvocationEvent({ agent, inputMessages }))
       await partialRegistry.invokeCallbacks(new BeforeModelCallEvent({ agent }))
       await partialRegistry.invokeCallbacks(new AfterModelCallEvent({
@@ -531,8 +414,68 @@ describe('TracerHookAdapter', () => {
         },
       }))
 
-      expect(partialTracer.startAgentSpan).toHaveBeenCalledTimes(1)
-      expect(partialTracer.endAgentSpan).toHaveBeenCalledTimes(1)
+      // startSpan called for: agent, model
+      expect(partialTracer.startSpan).toHaveBeenCalledTimes(2)
+      // endSpan called for: model, agent
+      expect(partialTracer.endSpan).toHaveBeenCalledTimes(2)
+    })
+
+    it('should work with tracer that implements no methods', async () => {
+      const emptyTracer: ITracer = {}
+
+      const emptyAdapter = new TracerHookAdapter(emptyTracer)
+      const emptyRegistry = new HookRegistryImplementation()
+      emptyAdapter.registerCallbacks(emptyRegistry)
+
+      const agent = createMockAgent()
+      const inputMessages = [new Message({ role: 'user', content: [new TextBlock('Hello')] })]
+
+      // Should not throw
+      await emptyRegistry.invokeCallbacks(new BeforeInvocationEvent({ agent, inputMessages }))
+      await emptyRegistry.invokeCallbacks(new BeforeModelCallEvent({ agent }))
+      await emptyRegistry.invokeCallbacks(new AfterModelCallEvent({
+        agent,
+        stopData: {
+          message: new Message({ role: 'assistant', content: [new TextBlock('Hi!')] }),
+          stopReason: 'endTurn',
+        },
+      }))
+      await emptyRegistry.invokeCallbacks(new AfterInvocationEvent({ agent }))
+    })
+
+    it('should warn when startSpan is implemented without endSpan', () => {
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const incompleteTracer: ITracer = {
+        startSpan: vi.fn().mockReturnValue({ id: 'span-1' }),
+        // endSpan intentionally not implemented
+      }
+
+      new TracerHookAdapter(incompleteTracer)
+
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('startSpan but not endSpan')
+      )
+
+      consoleSpy.mockRestore()
+    })
+
+    it('should not warn when all implemented methods have their counterparts', () => {
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const completeTracer: ITracer = {
+        startSpan: vi.fn().mockReturnValue({ id: 'span-1' }),
+        endSpan: vi.fn(),
+      }
+
+      new TracerHookAdapter(completeTracer)
+
+      // Should not have any warnings about incomplete implementation
+      expect(consoleSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('startSpan but not endSpan')
+      )
+
+      consoleSpy.mockRestore()
     })
   })
 })

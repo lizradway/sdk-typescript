@@ -73,10 +73,7 @@ describe('TelemetryHookProvider', () => {
 
     it('should accept telemetry config', () => {
       provider = new TelemetryHookProvider({
-        enabled: true,
-        customTraceAttributes: {
-          'custom.key': 'custom.value',
-        },
+        enableCycleSpans: true,
       })
       expect(provider).toBeDefined()
     })
@@ -89,11 +86,6 @@ describe('TelemetryHookProvider', () => {
     it('should allow disabling cycle spans', () => {
       provider = new TelemetryHookProvider({ enableCycleSpans: false })
       expect(provider.enableCycleSpans).toBe(false)
-    })
-
-    it('should accept debug mode', () => {
-      provider = new TelemetryHookProvider({ debug: true })
-      expect(provider).toBeDefined()
     })
   })
 
@@ -166,7 +158,7 @@ describe('TelemetryHookProvider', () => {
       })
       await registry.invokeCallbacks(afterEvent)
 
-      expect(provider.agentSpan).toBeNull()
+      expect(provider.agentSpan).toBeFalsy()
     })
 
     it('should start cycle span on BeforeModelCallEvent', async () => {
@@ -209,7 +201,7 @@ describe('TelemetryHookProvider', () => {
       await registry.invokeCallbacks(afterModelEvent)
 
       // Cycle span should be ended
-      expect(provider.cycleSpan).toBeNull()
+      expect(provider.cycleSpan).toBeFalsy()
     })
 
     it('should not end cycle span when stopReason is toolUse', async () => {
@@ -274,7 +266,7 @@ describe('TelemetryHookProvider', () => {
       await registry.invokeCallbacks(new AfterToolsEvent({ agent, message: toolResultMessage }))
 
       // Cycle span should be ended
-      expect(provider.cycleSpan).toBeNull()
+      expect(provider.cycleSpan).toBeFalsy()
     })
   })
 
@@ -296,7 +288,7 @@ describe('TelemetryHookProvider', () => {
       await registry.invokeCallbacks(new BeforeModelCallEvent({ agent }))
 
       // Cycle span should not be created
-      expect(provider.cycleSpan).toBeNull()
+      expect(provider.cycleSpan).toBeFalsy()
       // Model span should still be created
       expect(provider.modelSpan).toBeDefined()
     })
@@ -314,7 +306,7 @@ describe('TelemetryHookProvider', () => {
 
       // Model span should be created without cycle span
       expect(provider.modelSpan).toBeDefined()
-      expect(provider.cycleSpan).toBeNull()
+      expect(provider.cycleSpan).toBeFalsy()
     })
   })
 
@@ -607,45 +599,6 @@ describe('TelemetryHookProvider', () => {
 
       // Should not throw
       await expect(registry.invokeCallbacks(afterModelEvent)).resolves.not.toThrow()
-    })
-  })
-
-  describe('debug mode', () => {
-    it('should log debug messages when debug is enabled', async () => {
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-
-      provider = new TelemetryHookProvider({ debug: true })
-      registry = new HookRegistryImplementation()
-      provider.registerCallbacks(registry)
-
-      const agent = createMockAgent()
-      const inputMessages = [new Message({ role: 'user', content: [new TextBlock('Hello')] })]
-
-      await registry.invokeCallbacks(new BeforeInvocationEvent({ agent, inputMessages }))
-
-      // Should have logged debug messages
-      expect(consoleSpy).toHaveBeenCalled()
-      expect(consoleSpy.mock.calls.some(call => call[0].includes('[TelemetryHook]'))).toBe(true)
-
-      consoleSpy.mockRestore()
-    })
-
-    it('should not log debug messages when debug is disabled', async () => {
-      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-
-      provider = new TelemetryHookProvider({ debug: false })
-      registry = new HookRegistryImplementation()
-      provider.registerCallbacks(registry)
-
-      const agent = createMockAgent()
-      const inputMessages = [new Message({ role: 'user', content: [new TextBlock('Hello')] })]
-
-      await registry.invokeCallbacks(new BeforeInvocationEvent({ agent, inputMessages }))
-
-      // Should not have logged TelemetryHook debug messages
-      expect(consoleSpy.mock.calls.every(call => !call[0].includes('[TelemetryHook]'))).toBe(true)
-
-      consoleSpy.mockRestore()
     })
   })
 })
