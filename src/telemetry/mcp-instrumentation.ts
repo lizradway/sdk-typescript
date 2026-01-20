@@ -53,15 +53,9 @@ export function instrumentMcpClient(mcpClient: McpClient): void {
       const currentContext = context.active()
       const currentSpan = trace.getSpan(currentContext)
 
-      console.log(`[MCP Instrumentation] callTool invoked for tool: ${tool.name}`)
-      console.log(`[MCP Instrumentation] Current context span: ${currentSpan?.spanContext().spanId || 'none'}`)
-      console.log(`[MCP Instrumentation] Current context traceId: ${currentSpan?.spanContext().traceId || 'none'}`)
-
       // Check if we have an active span OR if there's a span in the context
       // The span might not be "active" but still present in the context
       const spanToUse = currentSpan || trace.getActiveSpan()
-
-      console.log(`[MCP Instrumentation] Span to use: ${spanToUse?.spanContext().spanId || 'none'}`)
 
       // Only inject context if we have a span with a valid trace ID
       if (spanToUse && spanToUse.spanContext().traceId) {
@@ -70,8 +64,6 @@ export function instrumentMcpClient(mcpClient: McpClient): void {
 
         // Inject current context into carrier (this will include the span)
         propagation.inject(currentContext, carrier)
-
-        console.log(`[MCP Instrumentation] Carrier after inject:`, carrier)
 
         // Prepare arguments with _meta field for context propagation
         let enhancedArgs = args

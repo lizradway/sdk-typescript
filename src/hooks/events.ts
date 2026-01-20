@@ -3,7 +3,8 @@ import type { ContentBlock, Message, ToolResultBlock } from '../types/messages.j
 import type { Tool, TracingContext } from '../tools/tool.js'
 import type { JSONValue } from '../types/json.js'
 import type { ModelStreamEvent } from '../models/streaming.js'
-import type { Span } from '@opentelemetry/api'
+import { context, trace, SpanStatusCode } from '@opentelemetry/api'
+import type { Span, Context } from '@opentelemetry/api'
 import type { Usage, Metrics } from '../telemetry/types.js'
 
 /**
@@ -155,21 +156,60 @@ export class BeforeToolCallEvent extends HookEvent {
    * Set the span that should be active during tool execution.
    * Called by telemetry hooks to enable trace context propagation to MCP tools.
    * Also extracts and stores the tracing context for tools to use.
+   * 
+   * @param span - The OTEL span for the tool execution
+   * @param spanContext - Optional context with the span set as active (for proper child span parenting)
    */
-  setActiveSpan(span: Span): void {
+  setActiveSpan(span: Span, spanContext?: Context): void {
     this._activeSpan = span
     
     // Extract tracing context from the span for tools to use
-    const spanContext = span.spanContext()
-    const traceFlags = spanContext.traceFlags
-    const traceparent = `00-${spanContext.traceId}-${spanContext.spanId}-${traceFlags.toString(16).padStart(2, '0')}`
+    const otelSpanContext = span.spanContext()
+    const traceFlags = otelSpanContext.traceFlags
+    const traceparent = `00-${otelSpanContext.traceId}-${otelSpanContext.spanId}-${traceFlags.toString(16).padStart(2, '0')}`
+    
+    // Use provided context or create one from the span
+    const parentContext = spanContext ?? trace.setSpan(context.active(), span)
     
     this._tracingContext = {
       traceparent,
-      traceId: spanContext.traceId,
-      spanId: spanContext.spanId,
+      traceId: otelSpanContext.traceId,
+      spanId: otelSpanContext.spanId,
       traceFlags,
       // tracestate is not directly available from SpanContext, would need TraceState API
+      withSpan: createWithSpan(parentContext, this.toolUse.name),
+    }
+  }
+}
+
+/**
+ * Create a withSpan function that creates child spans parented to the given context.
+ */
+function createWithSpan(parentContext: Context, toolName: string): <T>(name: string, fn: () => Promise<T>) => Promise<T> {
+  const tracer = trace.getTracer('strands-agents')
+  
+  return async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+    const span = tracer.startSpan(name, {
+      attributes: {
+        'gen_ai.operation.name': name,
+        'gen_ai.system': 'strands-agents',
+        'gen_ai.parent_tool.name': toolName,  // Use different attr to avoid Langfuse name override
+      },
+    }, parentContext)
+    const spanContext = trace.setSpan(parentContext, span)
+    
+    try {
+      const result = await context.with(spanContext, fn)
+      span.setStatus({ code: SpanStatusCode.OK })
+      return result
+    } catch (error) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: error instanceof Error ? error.message : String(error) })
+      if (error instanceof Error) {
+        span.recordException(error)
+      }
+      throw error
+    } finally {
+      span.end()
     }
   }
 }

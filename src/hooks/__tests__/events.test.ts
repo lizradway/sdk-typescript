@@ -160,12 +160,83 @@ describe('BeforeToolCallEvent', () => {
     event.setActiveSpan(mockSpan)
 
     expect(event._activeSpan).toBe(mockSpan)
-    expect(event._tracingContext).toEqual({
+    expect(event._tracingContext).toMatchObject({
       traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
       traceId: '0af7651916cd43dd8448eb211c80319c',
       spanId: 'b7ad6b7169203331',
       traceFlags: 1,
     })
+    expect(typeof event._tracingContext?.withSpan).toBe('function')
+  })
+
+  it('withSpan creates child spans that execute the provided function', async () => {
+    const agent = new Agent()
+    const toolUse = { name: 'test_tool', toolUseId: 'id', input: {} }
+    const event = new BeforeToolCallEvent({ agent, toolUse, tool: undefined })
+
+    const mockSpan = {
+      spanContext: () => ({
+        traceId: '0af7651916cd43dd8448eb211c80319c',
+        spanId: 'b7ad6b7169203331',
+        traceFlags: 1,
+      }),
+    } as unknown as import('@opentelemetry/api').Span
+
+    event.setActiveSpan(mockSpan)
+
+    // withSpan should execute the function and return its result
+    const result = await event._tracingContext!.withSpan('child_operation', async () => {
+      return 'test_result'
+    })
+
+    expect(result).toBe('test_result')
+  })
+
+  it('withSpan propagates errors from the provided function', async () => {
+    const agent = new Agent()
+    const toolUse = { name: 'test_tool', toolUseId: 'id', input: {} }
+    const event = new BeforeToolCallEvent({ agent, toolUse, tool: undefined })
+
+    const mockSpan = {
+      spanContext: () => ({
+        traceId: '0af7651916cd43dd8448eb211c80319c',
+        spanId: 'b7ad6b7169203331',
+        traceFlags: 1,
+      }),
+    } as unknown as import('@opentelemetry/api').Span
+
+    event.setActiveSpan(mockSpan)
+
+    // withSpan should propagate errors
+    await expect(
+      event._tracingContext!.withSpan('failing_operation', async () => {
+        throw new Error('Operation failed')
+      })
+    ).rejects.toThrow('Operation failed')
+  })
+
+  it('withSpan handles async operations correctly', async () => {
+    const agent = new Agent()
+    const toolUse = { name: 'test_tool', toolUseId: 'id', input: {} }
+    const event = new BeforeToolCallEvent({ agent, toolUse, tool: undefined })
+
+    const mockSpan = {
+      spanContext: () => ({
+        traceId: '0af7651916cd43dd8448eb211c80319c',
+        spanId: 'b7ad6b7169203331',
+        traceFlags: 1,
+      }),
+    } as unknown as import('@opentelemetry/api').Span
+
+    event.setActiveSpan(mockSpan)
+
+    // withSpan should handle async operations
+    const result = await event._tracingContext!.withSpan('async_operation', async () => {
+      await new Promise(resolve => setTimeout(resolve, 10))
+      return 42
+    })
+
+    expect(result).toBe(42)
   })
 
   it('setActiveSpan formats traceparent correctly with zero trace flags', () => {

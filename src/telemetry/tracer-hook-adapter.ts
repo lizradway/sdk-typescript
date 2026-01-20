@@ -192,9 +192,10 @@ export class TracerHookAdapter implements HookProvider {
 
       // If the span handle contains an OTEL Span, set it as active for MCP context propagation
       if (toolSpan && typeof toolSpan === 'object' && 'span' in toolSpan) {
-        const handle = toolSpan as { span: Span }
+        const handle = toolSpan as { span: Span; context?: import('@opentelemetry/api').Context }
         if (handle.span && typeof handle.span === 'object' && 'spanContext' in handle.span) {
-          event.setActiveSpan(handle.span)
+          // Pass both span and context for proper child span parenting
+          event.setActiveSpan(handle.span, handle.context)
         }
       }
     }

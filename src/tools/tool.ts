@@ -7,7 +7,8 @@ export type { ToolSpec } from './types.js'
 
 /**
  * Tracing context for distributed tracing across tool boundaries.
- * Tools can use this to propagate trace context to external services.
+ * Tools can use this to propagate trace context to external services
+ * and create child spans for sub-operations within the tool.
  *
  * @example
  * ```typescript
@@ -22,6 +23,16 @@ export type { ToolSpec } from './types.js'
  *       }
  *     }
  *     const response = await fetch(url, { headers })
+ *     // ...
+ *   }
+ * }
+ *
+ * // Tool with child spans for sub-operations
+ * class DatabaseTool extends Tool {
+ *   async *stream(toolContext: ToolContext) {
+ *     const result = await toolContext.tracing?.withSpan('db-query', async () => {
+ *       return await db.query('SELECT * FROM users')
+ *     })
  *     // ...
  *   }
  * }
@@ -60,6 +71,23 @@ export interface TracingContext {
    * Bit 0 = sampled flag.
    */
   traceFlags: number
+
+  /**
+   * Create a child span for a sub-operation within the tool.
+   * The child span will be parented to the current tool span.
+   *
+   * @param name - Name of the child span (e.g., 'db-query', 'api-call')
+   * @param fn - Async function to execute within the span
+   * @returns The result of the function
+   *
+   * @example
+   * ```typescript
+   * const result = await toolContext.tracing?.withSpan('fetch-data', async () => {
+   *   return await fetchFromApi()
+   * })
+   * ```
+   */
+  withSpan<T>(name: string, fn: () => Promise<T>): Promise<T>
 }
 
 /**

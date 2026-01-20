@@ -120,8 +120,9 @@ export function initializeTracerProvider(): NodeTracerProvider {
   _tracerProvider = new NodeTracerProvider({ resource })
   logger.warn(`tracer_provider=<created> | resource.service.name=<${resource.attributes['service.name']}>`)
 
-  // NodeTracerProvider auto-registers itself as the global provider
-  logger.warn('tracer_provider=<registered> | node tracer provider auto-registered as global')
+  // Register as the global tracer provider so trace.getTracer() returns tracers from this provider
+  _tracerProvider.register()
+  logger.warn('tracer_provider=<registered> | node tracer provider registered as global')
 
   // Set up propagators
   const propagator = new CompositePropagator({
