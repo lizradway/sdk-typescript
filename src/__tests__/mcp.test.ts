@@ -7,27 +7,13 @@ import { JsonBlock, type TextBlock, type ToolResultBlock } from '../types/messag
 import type { AgentData } from '../types/agent.js'
 import type { ToolContext } from '../tools/tool.js'
 
-/**
- * Helper to create a mock async generator that yields a result message.
- * This simulates the behavior of callToolStream returning a stream that ends with a result.
- */
-function createMockCallToolStream(result: unknown) {
-  return async function* () {
-    yield { type: 'result', result }
-  }
-}
-
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
   Client: vi.fn(function () {
     return {
       connect: vi.fn(),
       close: vi.fn(),
       listTools: vi.fn(),
-      experimental: {
-        tasks: {
-          callToolStream: vi.fn(),
-        },
-      },
+      callTool: vi.fn(),
     }
   }),
 }))
@@ -116,14 +102,14 @@ describe('MCP Integration', () => {
       expect(tools[0]!.name).toBe('weather')
     })
 
-    it('delegates invocation to SDK client via experimental.tasks.callToolStream', async () => {
+    it('delegates invocation to SDK client', async () => {
       const tool = new McpTool({ name: 'calc', description: '', inputSchema: {}, client })
-      sdkClientMock.experimental.tasks.callToolStream.mockReturnValue(createMockCallToolStream({ content: [] })())
+      sdkClientMock.callTool.mockResolvedValue({ content: [] })
 
       await client.callTool(tool, { op: 'add' })
 
       expect(sdkClientMock.connect).toHaveBeenCalled()
-      expect(sdkClientMock.experimental.tasks.callToolStream).toHaveBeenCalledWith({
+      expect(sdkClientMock.callTool).toHaveBeenCalledWith({
         name: 'calc',
         arguments: { op: 'add' },
       })

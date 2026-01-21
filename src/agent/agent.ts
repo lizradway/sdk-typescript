@@ -15,8 +15,11 @@ import {
   type Tool,
   type ToolContext,
   ToolResultBlock,
+  type ToolStreamEvent,
+  type ToolStreamGenerator,
   ToolUseBlock,
 } from '../index.js'
+import { EventLoopMetrics, Trace } from '../telemetry/metrics.js'
 import { systemPromptFromData } from '../types/messages.js'
 import { normalizeError, ConcurrentInvocationError } from '../errors.js'
 import type { BaseModelConfig, Model, StreamOptions } from '../models/model.js'
@@ -40,6 +43,12 @@ import {
   MessageAddedEvent,
   ModelStreamEventHook,
 } from '../hooks/events.js'
+import { Tracer, type ActiveSpanHandle } from '../telemetry/tracer.js'
+import { isTelemetryEnabled } from '../telemetry/config.js'
+import type { AttributeValue, Usage } from '../telemetry/types.js'
+import { createEmptyUsage, accumulateUsage, getModelId } from '../telemetry/utils.js'
+import { validateIdentifier, IdentifierType } from '../identifier.js'
+import { context, trace } from '@opentelemetry/api'
 
 /**
  * Recursive type definition for nested tool arrays.
@@ -103,6 +112,37 @@ export type AgentConfig = {
    * Hooks enable observing and extending agent behavior.
    */
   hooks?: HookProvider[]
+  /**
+   * Custom trace attributes to include in all spans.
+   * These attributes are merged with standard attributes in telemetry spans.
+   * Telemetry must be enabled globally via StrandsTelemetry for these to take effect.
+   *
+   * @example
+   * ```typescript
+   * // First, initialize global telemetry
+   * new StrandsTelemetry().setupOtlpExporter()
+   *
+   * // Then create agent with custom attributes
+   * const agent = new Agent({
+   *   model,
+   *   customTraceAttributes: {
+   *     'session.id': 'abc-1234',
+   *     'user.id': 'user@example.com',
+   *   },
+   * })
+   * ```
+   */
+  customTraceAttributes?: Record<string, AttributeValue>
+  /**
+   * Optional name for the agent, used in telemetry spans.
+   * Defaults to "Strands Agents" if not provided.
+   */
+  name?: string
+  /**
+   * Optional unique identifier for the agent.
+   * If not provided, a random identifier will be generated.
+   */
+  agentId?: string
 }
 
 /**
@@ -114,6 +154,8 @@ export type AgentConfig = {
  * - `Message[]` | `MessageData[]` - Array of messages (appends all to conversation)
  */
 export type InvokeArgs = string | ContentBlock[] | ContentBlockData[] | Message[] | MessageData[]
+
+const DEFAULT_AGENT_NAME = 'Strands Agents'
 
 /**
  * Orchestrates the interaction between a model, a set of tools, and MCP clients.
@@ -150,11 +192,26 @@ export class Agent implements AgentData {
    */
   public systemPrompt?: SystemPrompt
 
+  /**
+   * The name of the agent, used in telemetry spans.
+   */
+  public name: string
+
+  /**
+   * The unique identifier of the agent instance, used in telemetry spans.
+   */
+  public readonly agentId: string
+
   private _toolRegistry: ToolRegistry
   private _mcpClients: McpClient[]
   private _initialized: boolean
   private _isInvoking: boolean = false
   private _printer?: Printer
+  private _tracer?: Tracer
+  private _traceSpan?: ActiveSpanHandle
+  private _eventLoopMetrics: EventLoopMetrics
+  private _accumulatedTokenUsage: Usage = createEmptyUsage()
+  private _inputMessagesForTelemetry: Message[] = []
 
   /**
    * Creates an instance of the Agent.
@@ -165,6 +222,8 @@ export class Agent implements AgentData {
     this.messages = (config?.messages ?? []).map((msg) => (msg instanceof Message ? msg : Message.fromMessageData(msg)))
     this.state = new AgentState(config?.state)
     this.conversationManager = config?.conversationManager ?? new SlidingWindowConversationManager({ windowSize: 40 })
+    this.name = config?.name ?? DEFAULT_AGENT_NAME
+    this.agentId = validateIdentifier(config?.agentId, IdentifierType.AGENT)
 
     // Initialize hooks and register conversation manager hooks
     this.hooks = new HookRegistryImplementation()
@@ -190,6 +249,17 @@ export class Agent implements AgentData {
     if (printer) {
       this._printer = new AgentPrinter(getDefaultAppender())
     }
+
+    // Initialize tracer if global telemetry is enabled
+    if (isTelemetryEnabled()) {
+      const tracerConfig = config?.customTraceAttributes 
+        ? { customTraceAttributes: config.customTraceAttributes }
+        : undefined
+      this._tracer = new Tracer(tracerConfig)
+    }
+
+    // Initialize event loop metrics for tracking
+    this._eventLoopMetrics = new EventLoopMetrics()
 
     this._initialized = false
   }
@@ -229,6 +299,55 @@ export class Agent implements AgentData {
   }
 
   /**
+   * Starts a trace span for the agent invocation.
+   * Stores the span on the instance for use in the event loop.
+   *
+   * @param messages - The input messages
+   * @returns The created span handle, or undefined if telemetry is disabled
+   */
+  private _startAgentTraceSpan(messages: Message[]): ActiveSpanHandle | undefined {
+    if (!this._tracer) {
+      return undefined
+    }
+    
+    // Reset accumulated token usage for this invocation
+    this._accumulatedTokenUsage = createEmptyUsage()
+    
+    // Reset input messages for telemetry (will be captured when user messages are added)
+    this._inputMessagesForTelemetry = []
+    
+    // Get the model ID from the model
+    const modelId = getModelId(this.model)
+    
+    const handle = this._tracer.startAgentSpan({
+      messages,
+      agentName: this.name,
+      agentId: this.agentId,
+      modelId,
+      tools: this.tools,
+      systemPrompt: this.systemPrompt,
+    })
+    
+    return handle
+  }
+
+  /**
+   * Ends the trace span for the agent invocation.
+   *
+   * @param error - Optional error to record
+   * @param response - Optional response message to record
+   * @param stopReason - Optional stop reason (finish_reason) for the response
+   */
+  private _endAgentTraceSpan(error?: Error, response?: Message, stopReason?: string): void {
+    if (!this._tracer || !this._traceSpan) {
+      return
+    }
+
+    // Pass response, stopReason, and accumulated token usage to endAgentSpan
+    this._tracer.endAgentSpan(this._traceSpan, response, error, this._accumulatedTokenUsage, stopReason)
+  }
+
+  /**
    * The tools this agent can use.
    */
   get tools(): Tool[] {
@@ -240,6 +359,24 @@ export class Agent implements AgentData {
    */
   get toolRegistry(): ToolRegistry {
     return this._toolRegistry
+  }
+
+  /**
+   * The current trace span for telemetry (if telemetry is enabled).
+   * Returns the span object for inspection in tests or external telemetry systems.
+   * Matches the Python SDK's trace_span property.
+   */
+  get traceSpan(): import('@opentelemetry/api').Span | undefined {
+    return this._traceSpan?.span
+  }
+
+  /**
+   * Event loop metrics for tracking agent execution statistics.
+   * Provides access to cycle counts, tool usage, token consumption, and timing data.
+   * Matches the Python SDK's event_loop_metrics property.
+   */
+  get eventLoopMetrics(): EventLoopMetrics {
+    return this._eventLoopMetrics
   }
 
   /**
@@ -334,19 +471,87 @@ export class Agent implements AgentData {
    */
   private async *_stream(args: InvokeArgs): AsyncGenerator<AgentStreamEvent, AgentResult, undefined> {
     let currentArgs: InvokeArgs | undefined = args
+    let result: AgentResult | undefined
 
     // Emit event before the loop starts
     yield new BeforeInvocationEvent({ agent: this })
 
+    // Normalize input to get the user messages for telemetry
+    const inputMessages = this._normalizeInput(args)
+    
+    // Start a new agent invocation in event loop metrics (always, regardless of telemetry)
+    this._eventLoopMetrics.resetUsageMetrics()
+    
+    // Start agent trace span with the input messages (for Langfuse input capture)
+    const traceSpan = this._startAgentTraceSpan(inputMessages)
+    if (traceSpan) {
+      this._traceSpan = traceSpan
+    }
+
     try {
-      // Main agent loop - continues until model stops without requesting tools
-      while (true) {
+      // Execute agent loop - child spans will be linked to agent span via context stack
+      result = yield* this._executeAgentLoop(currentArgs)
+      
+      return result
+    } catch (error) {
+      // End agent span with error if telemetry is enabled
+      this._endAgentTraceSpan(error as Error, undefined, undefined)
+      throw error
+    } finally {
+      // End agent span AFTER all child spans are complete
+      // This must happen in finally to ensure it's called even if an error occurs
+      if (this._traceSpan && this._tracer) {
+        this._endAgentTraceSpan(undefined, result?.lastMessage, result?.stopReason)
+      }
+      // Always emit final event
+      yield new AfterInvocationEvent({ agent: this })
+    }
+  }
+
+  /**
+   * Execute the main agent loop within the agent span context.
+   * This is called from _stream() and runs within the agent span's context,
+   * ensuring all child spans (event loop cycles, model calls, tool calls) inherit the trace ID.
+   *
+   * @param initialArgs - Arguments for the first invocation
+   * @returns Async generator that yields AgentStreamEvent objects and returns AgentResult
+   */
+  private async *_executeAgentLoop(initialArgs?: InvokeArgs): AsyncGenerator<AgentStreamEvent, AgentResult, undefined> {
+    let currentArgs: InvokeArgs | undefined = initialArgs
+
+    // Main agent loop - continues until model stops without requesting tools
+    let cycleCount = 0
+    while (true) {
+      cycleCount++
+      const cycleId = `cycle-${cycleCount}`
+
+      // Create event loop cycle span if telemetry is enabled
+      // Context stack handles parenting automatically
+      const cycleSpan = this._tracer?.startEventLoopCycleSpan(cycleId, this.messages)
+
+      // Start cycle tracking in EventLoopMetrics
+      const { startTime: cycleStartTime, cycleTrace } = this._eventLoopMetrics.startCycle({
+        event_loop_cycle_id: cycleId,
+      })
+
+      try {
         const modelResult = yield* this.invokeModel(currentArgs)
         currentArgs = undefined // Only pass args on first invocation
         if (modelResult.stopReason !== 'toolUse') {
           // Loop terminates - no tool use requested
           // Add assistant message now that we're returning
           yield await this._appendMessage(modelResult.message)
+
+          // End cycle span if telemetry is enabled
+          if (cycleSpan && this._tracer) {
+            this._tracer.endEventLoopCycleSpan(cycleSpan)
+          }
+
+          // End cycle tracking in EventLoopMetrics
+          this._eventLoopMetrics.endCycle(cycleStartTime, cycleTrace, {
+            event_loop_cycle_id: cycleId,
+          }, modelResult.message)
+
           return new AgentResult({
             stopReason: modelResult.stopReason,
             lastMessage: modelResult.message,
@@ -361,11 +566,30 @@ export class Agent implements AgentData {
         yield await this._appendMessage(modelResult.message)
         yield await this._appendMessage(toolResultMessage)
 
+        // End cycle span if telemetry is enabled
+        if (cycleSpan && this._tracer) {
+          this._tracer.endEventLoopCycleSpan(cycleSpan)
+        }
+
+        // End cycle tracking in EventLoopMetrics
+        this._eventLoopMetrics.endCycle(cycleStartTime, cycleTrace, {
+          event_loop_cycle_id: cycleId,
+        }, modelResult.message)
+
         // Continue loop
+      } catch (error) {
+        // End cycle span with error if telemetry is enabled
+        if (cycleSpan && this._tracer) {
+          this._tracer.endEventLoopCycleSpan(cycleSpan, error as Error)
+        }
+
+        // End cycle tracking in EventLoopMetrics (even on error)
+        this._eventLoopMetrics.endCycle(cycleStartTime, cycleTrace, {
+          event_loop_cycle_id: cycleId,
+        })
+
+        throw error
       }
-    } finally {
-      // Always emit final event
-      yield new AfterInvocationEvent({ agent: this })
     }
   }
 
@@ -427,10 +651,11 @@ export class Agent implements AgentData {
    * Invokes the model provider and streams all events.
    *
    * @param args - Optional arguments for invoking the model
+   * @param eventLoopCycleSpan - Optional event loop cycle span to use as parent for model invocation span
    * @returns Object containing the assistant message and stop reason
    */
   private async *invokeModel(
-    args?: InvokeArgs
+    args?: InvokeArgs,
   ): AsyncGenerator<AgentStreamEvent, { message: Message; stopReason: string }, undefined> {
     // Normalize input and append messages to conversation
     const messagesToAppend = this._normalizeInput(args)
@@ -473,6 +698,7 @@ export class Agent implements AgentData {
 
   /**
    * Streams events from the model and fires ModelStreamEventHook for each event.
+   * Context stack handles span parenting automatically.
    *
    * @param messages - Messages to send to the model
    * @param streamOptions - Options for streaming
@@ -480,8 +706,14 @@ export class Agent implements AgentData {
    */
   private async *_streamFromModel(
     messages: Message[],
-    streamOptions: StreamOptions
+    streamOptions: StreamOptions,
   ): AsyncGenerator<AgentStreamEvent, { message: Message; stopReason: string }, undefined> {
+    // Start model span if telemetry is enabled
+    // Context stack handles parenting automatically
+    const modelId = getModelId(this.model)
+    
+    const modelSpan = this._tracer?.startModelInvokeSpan(messages, modelId)
+    
     const streamGenerator = this.model.streamAggregated(messages, streamOptions)
     let result = await streamGenerator.next()
 
@@ -494,6 +726,28 @@ export class Agent implements AgentData {
       // Yield the actual model event
       yield event
       result = await streamGenerator.next()
+    }
+
+    // Accumulate token usage from metadata if available
+    if (result.value.metadata?.usage) {
+      const usage = result.value.metadata.usage
+      accumulateUsage(this._accumulatedTokenUsage, usage)
+      
+      // Update EventLoopMetrics with token usage
+      this._eventLoopMetrics.updateUsage(usage)
+      
+      // Update latency metrics if available
+      if (result.value.metadata?.metrics?.latencyMs) {
+        this._eventLoopMetrics.updateMetrics(result.value.metadata.metrics)
+      }
+    }
+
+    // End model span if telemetry is enabled
+    if (modelSpan && this._tracer) {
+      this._tracer.endModelInvokeSpan(modelSpan, {
+        output: result.value.message,
+        stopReason: result.value.stopReason,
+      })
     }
 
     // result.done is true, result.value contains the return value
@@ -592,8 +846,20 @@ export class Agent implements AgentData {
       agent: this,
     }
 
+    // Start tool call span if telemetry is enabled
+    // Context stack handles parenting automatically
+    const toolSpan = this._tracer?.startToolCallSpan(toolUse)
+
+    // Track tool execution time for EventLoopMetrics
+    const toolStartTime = Date.now() / 1000
+    const toolTrace = new Trace(`Tool: ${toolUseBlock.name}`, undefined, toolStartTime)
+
     try {
-      const toolGenerator = tool.stream(toolContext)
+      // Execute tool with the tool span as active context for trace propagation
+      // This allows MCP instrumentation to find the active span and inject trace context
+      const toolGenerator = toolSpan 
+        ? this._executeToolWithActiveSpan(tool, toolContext, toolSpan.span)
+        : tool.stream(toolContext)
 
       // Use yield* to delegate to the tool generator and capture the return value
       const toolResult = yield* toolGenerator
@@ -608,10 +874,42 @@ export class Agent implements AgentData {
 
         yield new AfterToolCallEvent({ agent: this, toolUse, tool, result: errorResult })
 
+        // End tool span with error if telemetry is enabled
+        if (toolSpan && this._tracer) {
+          this._tracer.endToolCallSpan(toolSpan, errorResult)
+        }
+
+        // Track tool failure in EventLoopMetrics
+        const toolEndTime = Date.now() / 1000
+        const toolDuration = toolEndTime - toolStartTime
+        this._eventLoopMetrics.addToolUsage(
+          toolUse,
+          toolDuration,
+          toolTrace,
+          false, // success = false
+          new Message({ role: 'user', content: [errorResult] })
+        )
+
         return errorResult
       }
 
       yield new AfterToolCallEvent({ agent: this, toolUse, tool, result: toolResult })
+
+      // End tool span with success if telemetry is enabled
+      if (toolSpan && this._tracer) {
+        this._tracer.endToolCallSpan(toolSpan, toolResult)
+      }
+
+      // Track tool success in EventLoopMetrics
+      const toolEndTime = Date.now() / 1000
+      const toolDuration = toolEndTime - toolStartTime
+      this._eventLoopMetrics.addToolUsage(
+        toolUse,
+        toolDuration,
+        toolTrace,
+        true, // success = true
+        new Message({ role: 'user', content: [toolResult] })
+      )
 
       // Tool already returns ToolResultBlock directly
       return toolResult
@@ -627,8 +925,67 @@ export class Agent implements AgentData {
 
       yield new AfterToolCallEvent({ agent: this, toolUse, tool, result: errorResult, error: toolError })
 
+      // End tool span with error if telemetry is enabled
+      if (toolSpan && this._tracer) {
+        this._tracer.endToolCallSpan(toolSpan, errorResult, toolError)
+      }
+
+      // Track tool error in EventLoopMetrics
+      const toolEndTime = Date.now() / 1000
+      const toolDuration = toolEndTime - toolStartTime
+      this._eventLoopMetrics.addToolUsage(
+        toolUse,
+        toolDuration,
+        toolTrace,
+        false, // success = false
+        new Message({ role: 'user', content: [errorResult] })
+      )
+
       return errorResult
     }
+  }
+
+  /**
+   * Execute a tool with the tool span set as active context.
+   * This enables MCP instrumentation to find the active span and inject trace context.
+   *
+   * The key insight is that we need to wrap the ITERATION of the generator, not just
+   * the creation of it. The generator is lazy - it doesn't execute until we iterate.
+   *
+   * @param tool - The tool to execute
+   * @param toolContext - The tool execution context
+   * @param toolSpan - The tool span to set as active
+   * @returns AsyncGenerator yielding tool results
+   */
+  private async *_executeToolWithActiveSpan(
+    tool: Tool,
+    toolContext: ToolContext,
+    toolSpan: import('@opentelemetry/api').Span
+  ): ToolStreamGenerator {
+    // Set the tool span as active in the OpenTelemetry context
+    // trace.setSpan returns a NEW context with the span set
+    const spanContext = trace.setSpan(context.active(), toolSpan)
+    
+    // Get the generator from the tool
+    const toolGenerator = tool.stream(toolContext)
+    
+    // Iterate over the generator within the active span context
+    // This ensures the context is active when callTool() is actually invoked
+    let result = await context.with(spanContext, async () => {
+      return await toolGenerator.next()
+    })
+    
+    while (!result.done) {
+      // Yield intermediate events (ToolStreamEvent)
+      yield result.value as ToolStreamEvent
+      // Keep the context active for each iteration
+      result = await context.with(spanContext, async () => {
+        return await toolGenerator.next()
+      })
+    }
+    
+    // Return the final value (ToolResultBlock)
+    return result.value
   }
 
   /**

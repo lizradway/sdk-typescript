@@ -57,6 +57,15 @@ sdk-typescript/
 │   │   ├── model.ts              # Base model provider interface
 │   │   └── streaming.ts          # Streaming event types
 │   │
+│   ├── telemetry/                # Telemetry and tracing
+│   │   ├── __tests__/            # Unit tests for telemetry
+│   │   │   ├── tracer.test.ts    # Tests for Tracer class and span management
+│   │   │   └── config.test.ts    # Tests for StrandsTelemetry configuration
+│   │   ├── tracer.ts             # Core Tracer class with JSONEncoder
+│   │   ├── config.ts             # OpenTelemetry configuration and setup (StrandsTelemetry)
+│   │   ├── types.ts              # Telemetry type definitions
+│   │   └── index.ts              # Public exports for telemetry
+│   │
 │   ├── tools/                    # Tool definitions and types
 │   │   ├── __tests__/            # Unit tests for tools
 │   │   │   ├── registry.test.ts  # Tests for ToolRegistry

@@ -1,8 +1,8 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { takeResult } from '@modelcontextprotocol/sdk/shared/responseMessage.js'
 import type { JSONSchema, JSONValue } from './types/json.js'
 import { McpTool } from './tools/mcp-tool.js'
+import { instrumentMcpClient } from './telemetry/mcp-instrumentation.js'
 
 /** Temporary placeholder for RuntimeConfig */
 export interface RuntimeConfig {
@@ -30,6 +30,10 @@ export class McpClient {
       name: this._clientName,
       version: this._clientVersion,
     })
+
+    // Auto-apply instrumentation for distributed tracing
+    // This will inject OpenTelemetry context into MCP requests
+    instrumentMcpClient(this)
   }
 
   get client(): Client {
@@ -110,15 +114,11 @@ export class McpClient {
       )
     }
 
-    // Using callToolStream which automatically handles both:
-    // - Regular (non-task) tools: returns result immediately
-    // - Task-augmented tools: handles taskCreated -> taskStatus -> result flow
-    const stream = this._client.experimental.tasks.callToolStream({
+    const result = await this._client.callTool({
       name: tool.name,
       arguments: args as Record<string, unknown>,
     })
 
-    const result = await takeResult(stream)
     return result as JSONValue
   }
 }
