@@ -3,7 +3,14 @@
  */
 
 export { Tracer, serialize, mapContentBlocksToOtelParts, getTracer, _resetContextStack } from './tracer.js'
-export type { ActiveSpanHandle, EndModelSpanOptions, StartAgentSpanOptions } from './tracer.js'
+export type {
+  ActiveSpanHandle,
+  EndModelSpanOptions,
+  StartAgentSpanOptions,
+  StartModelInvokeSpanOptions,
+  StartToolCallSpanOptions,
+  StartEventLoopCycleSpanOptions,
+} from './tracer.js'
 export { StrandsTelemetry, getOtelResource, isTelemetryEnabled, getGlobalTelemetry, parseOtlpHeaders } from './config.js'
 export type { MeterOptions } from './config.js'
 export { createEmptyUsage, accumulateUsage, getModelId } from './utils.js'

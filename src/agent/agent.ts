@@ -527,7 +527,7 @@ export class Agent implements AgentData {
 
       // Create event loop cycle span if telemetry is enabled
       // Context stack handles parenting automatically
-      const cycleSpan = this._tracer?.startEventLoopCycleSpan(cycleId, this.messages)
+      const cycleSpan = this._tracer?.startEventLoopCycleSpan({ cycleId, messages: this.messages })
 
       // Start cycle tracking in EventLoopMetrics
       const { startTime: cycleStartTime, cycleTrace } = this._eventLoopMetrics.startCycle({
@@ -712,7 +712,7 @@ export class Agent implements AgentData {
     // Context stack handles parenting automatically
     const modelId = getModelId(this.model)
     
-    const modelSpan = this._tracer?.startModelInvokeSpan(messages, modelId)
+    const modelSpan = this._tracer?.startModelInvokeSpan({ messages, modelId })
     
     const streamGenerator = this.model.streamAggregated(messages, streamOptions)
     let result = await streamGenerator.next()
@@ -848,7 +848,7 @@ export class Agent implements AgentData {
 
     // Start tool call span if telemetry is enabled
     // Context stack handles parenting automatically
-    const toolSpan = this._tracer?.startToolCallSpan(toolUse)
+    const toolSpan = this._tracer?.startToolCallSpan({ tool: toolUse })
 
     // Track tool execution time for EventLoopMetrics
     const toolStartTime = Date.now() / 1000

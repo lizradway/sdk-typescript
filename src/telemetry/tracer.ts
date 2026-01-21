@@ -4,12 +4,12 @@
  * This module provides tracing capabilities using OpenTelemetry,
  * enabling trace data to be sent to OTLP endpoints.
  *
- * Uses a context stack for automatic context propagation - child spans
- * automatically parent to the current active span without manual tracking.
+ * Uses OpenTelemetry's startActiveSpan for automatic context propagation.
+ * Child spans automatically parent to the current active span.
  */
 
 import { context, SpanStatusCode, SpanKind, trace } from '@opentelemetry/api'
-import type { Span, Tracer as OtelTracer, Context } from '@opentelemetry/api'
+import type { Span, Tracer as OtelTracer, SpanOptions } from '@opentelemetry/api'
 import type { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'
 import { logger } from '../logging/index.js'
 import { initializeTracerProvider, isTelemetryEnabled } from './config.js'
@@ -24,12 +24,11 @@ import type {
 import type { Message } from '../types/messages.js'
 
 /**
- * Handle returned by startActiveSpan methods that includes both the span and its context.
- * This allows proper context propagation when ending spans.
+ * Handle returned by span start methods.
+ * Contains the span for manual lifecycle management in async generators.
  */
 export interface ActiveSpanHandle {
   span: Span
-  context: Context
 }
 
 /**
@@ -55,6 +54,32 @@ export interface StartAgentSpanOptions {
   customTraceAttributes?: Record<string, AttributeValue>
   toolsConfig?: Record<string, unknown>
   systemPrompt?: unknown
+}
+
+/**
+ * Options for starting a model invocation span.
+ */
+export interface StartModelInvokeSpanOptions {
+  messages: Message[]
+  modelId?: string
+  customTraceAttributes?: Record<string, AttributeValue>
+}
+
+/**
+ * Options for starting a tool call span.
+ */
+export interface StartToolCallSpanOptions {
+  tool: ToolUse
+  customTraceAttributes?: Record<string, AttributeValue>
+}
+
+/**
+ * Options for starting an event loop cycle span.
+ */
+export interface StartEventLoopCycleSpanOptions {
+  cycleId: string
+  messages: Message[]
+  customTraceAttributes?: Record<string, AttributeValue>
 }
 
 /**
@@ -199,8 +224,10 @@ const _encoder = new JSONEncoder()
 
 // Global context stack shared across all Tracer instances
 // This ensures proper parent-child relationships when spans are created
-// from different Tracer instances (e.g., Agent tracer vs Model tracer)
-let _globalContextStack: Context[] = []
+// from different Tracer instances across async generator boundaries.
+// OpenTelemetry's async local storage doesn't persist across yields,
+// so we maintain our own stack.
+let _globalContextStack: import('@opentelemetry/api').Context[] = []
 
 /**
  * Reset the global context stack (for testing only).
@@ -245,8 +272,8 @@ function _mapContentBlocksToOtelParts(contentBlocks: unknown[]): Record<string, 
  * Tracer manages OpenTelemetry spans for agent operations.
  *
  * Maintains a context stack to ensure proper parent-child relationships
- * between spans across async boundaries. Child spans automatically parent
- * to the current active span without manual tracking.
+ * between spans across async generator boundaries. OpenTelemetry's async
+ * local storage doesn't persist across yields, so we maintain our own stack.
  */
 export class Tracer {
   private readonly _tracer: OtelTracer
@@ -276,7 +303,7 @@ export class Tracer {
   /**
    * Get the current context for span creation.
    */
-  private _getCurrentContext(): Context {
+  private _getCurrentContext(): import('@opentelemetry/api').Context {
     return _globalContextStack.length > 0
       ? _globalContextStack[_globalContextStack.length - 1]!
       : context.active()
@@ -285,7 +312,7 @@ export class Tracer {
   /**
    * Push a new context onto the stack.
    */
-  private _pushContext(ctx: Context): void {
+  private _pushContext(ctx: import('@opentelemetry/api').Context): void {
     _globalContextStack.push(ctx)
   }
 
@@ -425,11 +452,9 @@ export class Tracer {
   /**
    * Start a model invocation span as the active span.
    */
-  startModelInvokeSpan(
-    messages: Message[],
-    modelId?: string,
-    customTraceAttributes?: Record<string, AttributeValue>,
-  ): ActiveSpanHandle {
+  startModelInvokeSpan(options: StartModelInvokeSpanOptions): ActiveSpanHandle {
+    const { messages, modelId, customTraceAttributes } = options
+
     try {
       const attributes = this._getCommonAttributes('chat')
 
@@ -487,10 +512,9 @@ export class Tracer {
   /**
    * Start a tool call span as the active span.
    */
-  startToolCallSpan(
-    tool: ToolUse,
-    customTraceAttributes?: Record<string, AttributeValue>,
-  ): ActiveSpanHandle {
+  startToolCallSpan(options: StartToolCallSpanOptions): ActiveSpanHandle {
+    const { tool, customTraceAttributes } = options
+
     try {
       const attributes = this._getCommonAttributes('execute_tool')
       attributes['gen_ai.tool.name'] = tool.name
@@ -563,11 +587,9 @@ export class Tracer {
   /**
    * Start an event loop cycle span as the active span.
    */
-  startEventLoopCycleSpan(
-    cycleId: string,
-    messages: Message[],
-    customTraceAttributes?: Record<string, AttributeValue>,
-  ): ActiveSpanHandle {
+  startEventLoopCycleSpan(options: StartEventLoopCycleSpanOptions): ActiveSpanHandle {
+    const { cycleId, messages, customTraceAttributes } = options
+
     try {
       const attributes: Record<string, AttributeValue> = { 'event_loop.cycle_id': cycleId }
       const mergedAttributes = this._mergeAttributes(attributes, customTraceAttributes)
@@ -595,14 +617,18 @@ export class Tracer {
 
 
   /**
-   * Create a span and set it as the current span in context.
+   * Create a span and push its context onto the stack.
+   * Child spans will automatically parent to this span.
+   * 
+   * For async generators, call the corresponding endXxxSpan() method
+   * to close the span and pop the context.
    */
   private _createActiveSpan(
     spanName: string,
     attributes?: Record<string, AttributeValue>,
     spanKind?: SpanKind,
   ): ActiveSpanHandle {
-    const options: { attributes?: Record<string, AttributeValue | undefined>; kind?: SpanKind } = {}
+    const options: SpanOptions = {}
 
     if (attributes) {
       const otelAttributes: Record<string, AttributeValue | undefined> = {}
@@ -618,6 +644,7 @@ export class Tracer {
       options.kind = spanKind
     }
 
+    // Create span with current context from our stack
     const parentContext = this._getCurrentContext()
     const span = this._tracer.startSpan(spanName, options, parentContext)
 
@@ -627,14 +654,16 @@ export class Tracer {
       // Ignore attribute setting errors
     }
 
+    // Push the new span's context onto our stack
     const spanContext = trace.setSpan(parentContext, span)
     this._pushContext(spanContext)
 
-    return { span, context: spanContext }
+    return { span }
   }
 
   /**
    * Close a span with the given attributes and optional error.
+   * Pops the context from the stack.
    */
   private _closeSpan(span: Span, attributes?: Record<string, AttributeValue>, error?: Error): void {
     try {
@@ -660,6 +689,78 @@ export class Tracer {
       // Always pop context, even if an error occurred
       this._popContext()
     }
+  }
+
+  /**
+   * Execute an async function within a new span.
+   * The span is automatically ended when the function completes or throws.
+   * Use this for simple async operations that don't involve generators.
+   * 
+   * @param spanName - Name of the span
+   * @param attributes - Span attributes
+   * @param fn - Async function to execute within the span
+   * @returns The result of the function
+   */
+  async withSpan<T>(
+    spanName: string,
+    attributes: Record<string, AttributeValue>,
+    fn: (span: Span) => Promise<T>,
+  ): Promise<T> {
+    const options: SpanOptions = { attributes }
+    const parentContext = this._getCurrentContext()
+    
+    return this._tracer.startActiveSpan(spanName, options, parentContext, async (span) => {
+      try {
+        span.setAttribute('gen_ai.event.start_time', new Date().toISOString())
+        const result = await fn(span)
+        span.setAttribute('gen_ai.event.end_time', new Date().toISOString())
+        span.setStatus({ code: SpanStatusCode.OK })
+        return result
+      } catch (error) {
+        span.setAttribute('gen_ai.event.end_time', new Date().toISOString())
+        span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message })
+        span.recordException(error as Error)
+        throw error
+      } finally {
+        span.end()
+      }
+    })
+  }
+
+  /**
+   * Execute a sync function within a new span.
+   * The span is automatically ended when the function completes or throws.
+   * Use this for simple sync operations.
+   * 
+   * @param spanName - Name of the span
+   * @param attributes - Span attributes
+   * @param fn - Function to execute within the span
+   * @returns The result of the function
+   */
+  withSpanSync<T>(
+    spanName: string,
+    attributes: Record<string, AttributeValue>,
+    fn: (span: Span) => T,
+  ): T {
+    const options: SpanOptions = { attributes }
+    const parentContext = this._getCurrentContext()
+    
+    return this._tracer.startActiveSpan(spanName, options, parentContext, (span) => {
+      try {
+        span.setAttribute('gen_ai.event.start_time', new Date().toISOString())
+        const result = fn(span)
+        span.setAttribute('gen_ai.event.end_time', new Date().toISOString())
+        span.setStatus({ code: SpanStatusCode.OK })
+        return result
+      } catch (error) {
+        span.setAttribute('gen_ai.event.end_time', new Date().toISOString())
+        span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message })
+        span.recordException(error as Error)
+        throw error
+      } finally {
+        span.end()
+      }
+    })
   }
 
   /**

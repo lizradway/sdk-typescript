@@ -44,7 +44,6 @@ import type { JSONValue } from '../types/json.js'
 import { ContextWindowOverflowError, normalizeError } from '../errors.js'
 import { ensureDefined } from '../types/validation.js'
 import { logger } from '../logging/logger.js'
-import { Tracer } from '../telemetry/tracer.js'
 
 /**
  * Default Bedrock model ID.
@@ -183,12 +182,6 @@ export interface BedrockModelConfig extends BaseModelConfig {
    * - `'auto'`: Automatically determine based on model ID (default)
    */
   includeToolResultStatus?: 'auto' | boolean
-
-  /**
-   * Telemetry configuration for OpenTelemetry tracing.
-   * When provided, enables automatic tracing of model invocations.
-   */
-  telemetryConfig?: import('../telemetry/types.js').TelemetryConfig
 }
 
 /**
@@ -239,7 +232,6 @@ export interface BedrockModelOptions extends BedrockModelConfig {
 export class BedrockModel extends Model<BedrockModelConfig> {
   private _config: BedrockModelConfig
   private _client: BedrockRuntimeClient
-  private _tracer?: Tracer
 
   /**
    * Creates a new BedrockModel instance.
@@ -296,11 +288,6 @@ export class BedrockModel extends Model<BedrockModelConfig> {
     })
 
     applyDefaultRegion(this._client.config)
-
-    // Initialize tracer if telemetry is enabled
-    if (modelConfig?.telemetryConfig?.enabled === true) {
-      this._tracer = new Tracer(modelConfig.telemetryConfig)
-    }
   }
 
   /**
@@ -367,10 +354,6 @@ export class BedrockModel extends Model<BedrockModelConfig> {
    * ```
    */
   async *stream(messages: Message[], options?: StreamOptions): AsyncIterable<ModelStreamEvent> {
-    // Start model span if telemetry is enabled
-    // Context stack handles parenting automatically
-    const modelSpan = this._tracer?.startModelInvokeSpan(messages, this._config.modelId || DEFAULT_BEDROCK_MODEL_ID)
-
     try {
       // Format the request for Bedrock
       const request = this._formatRequest(messages, options)
@@ -385,13 +368,6 @@ export class BedrockModel extends Model<BedrockModelConfig> {
             // Map Bedrock events to SDK events
             const events = this._mapStreamedBedrockEventToSDKEvent(chunk)
             for (const event of events) {
-              // Capture usage and metrics from metadata events and stop reason from message stop events
-              if (event.type === 'modelMetadataEvent') {
-                usage = event.usage
-                metrics = event.metrics
-              } else if (event.type === 'modelMessageStopEvent') {
-                stopReason = event.stopReason
-              }
               yield event
             }
           }
@@ -400,28 +376,11 @@ export class BedrockModel extends Model<BedrockModelConfig> {
         const command = new ConverseCommand(request)
         const response = await this._client.send(command)
         for (const event of this._mapBedrockEventToSDKEvent(response)) {
-          // Capture usage and metrics from metadata events and stop reason from message stop events
-          if (event.type === 'modelMetadataEvent') {
-            usage = event.usage
-            metrics = event.metrics
-          } else if (event.type === 'modelMessageStopEvent') {
-            stopReason = event.stopReason
-          }
           yield event
         }
       }
-
-      // End model span with usage and stop reason if telemetry is enabled
-      if (modelSpan && this._tracer) {
-        this._tracer.endModelInvokeSpan(modelSpan, undefined, usage, metrics, stopReason)
-      }
     } catch (unknownError) {
       const error = normalizeError(unknownError)
-
-      // End model span with error if telemetry is enabled
-      if (modelSpan && this._tracer) {
-        this._tracer.endModelInvokeSpan(modelSpan, undefined, undefined, undefined, undefined, error)
-      }
 
       // Check for context window overflow
       if (BEDROCK_CONTEXT_WINDOW_OVERFLOW_MESSAGES.some((msg) => error.message.includes(msg))) {
