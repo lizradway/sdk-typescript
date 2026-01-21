@@ -46,7 +46,7 @@ import {
 import { Tracer, type ActiveSpanHandle } from '../telemetry/tracer.js'
 import { isTelemetryEnabled } from '../telemetry/config.js'
 import type { AttributeValue, Usage } from '../telemetry/types.js'
-import { createEmptyUsage, accumulateUsage, getModelId } from '../telemetry/types.js'
+import { createEmptyUsage, accumulateUsage, getModelId } from '../telemetry/utils.js'
 import { validateIdentifier, IdentifierType } from '../identifier.js'
 import { context, trace } from '@opentelemetry/api'
 
@@ -208,7 +208,7 @@ export class Agent implements AgentData {
   private _isInvoking: boolean = false
   private _printer?: Printer
   private _tracer?: Tracer
-  private _traceSpan?: ActiveSpanHandle
+  private _traceSpan?: ActiveSpanHandle | undefined
   private _eventLoopMetrics: EventLoopMetrics
   private _accumulatedTokenUsage: Usage = createEmptyUsage()
   private _inputMessagesForTelemetry: Message[] = []
@@ -341,8 +341,10 @@ export class Agent implements AgentData {
       return
     }
 
-    // Pass response, stopReason, and accumulated token usage to endAgentSpan
-    this._tracer.endAgentSpan(this._traceSpan, response, error, this._accumulatedTokenUsage, stopReason)
+    const span = this._traceSpan
+    this._traceSpan = undefined // Clear first to ensure idempotency
+
+    this._tracer.endAgentSpan(span, response, error, this._accumulatedTokenUsage, stopReason)
   }
 
   /**
@@ -492,15 +494,12 @@ export class Agent implements AgentData {
       
       return result
     } catch (error) {
-      // End agent span with error if telemetry is enabled
+      // End agent span with error
       this._endAgentTraceSpan(error as Error, undefined, undefined)
       throw error
     } finally {
-      // End agent span AFTER all child spans are complete
-      // This must happen in finally to ensure it's called even if an error occurs
-      if (this._traceSpan && this._tracer) {
-        this._endAgentTraceSpan(undefined, result?.lastMessage, result?.stopReason)
-      }
+      // End agent span on success (idempotent - won't double-end if catch already ended it)
+      this._endAgentTraceSpan(undefined, result?.lastMessage, result?.stopReason)
       // Always emit final event
       yield new AfterInvocationEvent({ agent: this })
     }

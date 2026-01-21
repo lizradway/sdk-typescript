@@ -5,12 +5,33 @@
 
 import { randomUUID } from 'crypto'
 import { metrics as metricsApi, type Counter, type Histogram, type Meter } from '@opentelemetry/api'
-import * as constants from './metrics-constants.js'
 import type { Message } from '../types/messages.js'
 import type { Usage, Metrics } from '../models/streaming.js'
 import type { ToolUse } from './types.js'
 import { logger } from '../logging/index.js'
-import { createEmptyUsage, accumulateUsage } from './types.js'
+import { createEmptyUsage, accumulateUsage } from './utils.js'
+
+/**
+ * Metrics constants that are emitted in Strands-Agents.
+ * Matches the Python SDK's metrics_constants.py for parity.
+ */
+// Counters
+const STRANDS_EVENT_LOOP_CYCLE_COUNT = 'strands.event_loop.cycle_count'
+const STRANDS_EVENT_LOOP_START_CYCLE = 'strands.event_loop.start_cycle'
+const STRANDS_EVENT_LOOP_END_CYCLE = 'strands.event_loop.end_cycle'
+const STRANDS_TOOL_CALL_COUNT = 'strands.tool.call_count'
+const STRANDS_TOOL_SUCCESS_COUNT = 'strands.tool.success_count'
+const STRANDS_TOOL_ERROR_COUNT = 'strands.tool.error_count'
+
+// Histograms
+const STRANDS_EVENT_LOOP_LATENCY = 'strands.event_loop.latency'
+const STRANDS_TOOL_DURATION = 'strands.tool.duration'
+const STRANDS_EVENT_LOOP_CYCLE_DURATION = 'strands.event_loop.cycle_duration'
+const STRANDS_EVENT_LOOP_INPUT_TOKENS = 'strands.event_loop.input.tokens'
+const STRANDS_EVENT_LOOP_OUTPUT_TOKENS = 'strands.event_loop.output.tokens'
+const STRANDS_EVENT_LOOP_CACHE_READ_INPUT_TOKENS = 'strands.event_loop.cache_read.input.tokens'
+const STRANDS_EVENT_LOOP_CACHE_WRITE_INPUT_TOKENS = 'strands.event_loop.cache_write.input.tokens'
+const STRANDS_MODEL_TIME_TO_FIRST_TOKEN = 'strands.model.time_to_first_token'
 
 /**
  * Options for recording tool usage metrics.
@@ -403,65 +424,65 @@ export class MetricsClient {
    * Create and initialize all OpenTelemetry metric instruments.
    */
   private createInstruments(): void {
-    this.eventLoopCycleCount = this.meter.createCounter(constants.STRANDS_EVENT_LOOP_CYCLE_COUNT, {
+    this.eventLoopCycleCount = this.meter.createCounter(STRANDS_EVENT_LOOP_CYCLE_COUNT, {
       unit: 'Count',
       description: 'Number of event loop cycles',
     })
-    this.eventLoopStartCycle = this.meter.createCounter(constants.STRANDS_EVENT_LOOP_START_CYCLE, {
+    this.eventLoopStartCycle = this.meter.createCounter(STRANDS_EVENT_LOOP_START_CYCLE, {
       unit: 'Count',
       description: 'Number of event loop cycle starts',
     })
-    this.eventLoopEndCycle = this.meter.createCounter(constants.STRANDS_EVENT_LOOP_END_CYCLE, {
+    this.eventLoopEndCycle = this.meter.createCounter(STRANDS_EVENT_LOOP_END_CYCLE, {
       unit: 'Count',
       description: 'Number of event loop cycle ends',
     })
-    this.eventLoopCycleDuration = this.meter.createHistogram(constants.STRANDS_EVENT_LOOP_CYCLE_DURATION, {
+    this.eventLoopCycleDuration = this.meter.createHistogram(STRANDS_EVENT_LOOP_CYCLE_DURATION, {
       unit: 's',
       description: 'Duration of event loop cycles',
     })
-    this.eventLoopLatency = this.meter.createHistogram(constants.STRANDS_EVENT_LOOP_LATENCY, {
+    this.eventLoopLatency = this.meter.createHistogram(STRANDS_EVENT_LOOP_LATENCY, {
       unit: 'ms',
       description: 'Event loop latency',
     })
-    this.toolCallCount = this.meter.createCounter(constants.STRANDS_TOOL_CALL_COUNT, {
+    this.toolCallCount = this.meter.createCounter(STRANDS_TOOL_CALL_COUNT, {
       unit: 'Count',
       description: 'Number of tool calls',
     })
-    this.toolSuccessCount = this.meter.createCounter(constants.STRANDS_TOOL_SUCCESS_COUNT, {
+    this.toolSuccessCount = this.meter.createCounter(STRANDS_TOOL_SUCCESS_COUNT, {
       unit: 'Count',
       description: 'Number of successful tool calls',
     })
-    this.toolErrorCount = this.meter.createCounter(constants.STRANDS_TOOL_ERROR_COUNT, {
+    this.toolErrorCount = this.meter.createCounter(STRANDS_TOOL_ERROR_COUNT, {
       unit: 'Count',
       description: 'Number of failed tool calls',
     })
-    this.toolDuration = this.meter.createHistogram(constants.STRANDS_TOOL_DURATION, {
+    this.toolDuration = this.meter.createHistogram(STRANDS_TOOL_DURATION, {
       unit: 's',
       description: 'Duration of tool calls',
     })
-    this.eventLoopInputTokens = this.meter.createHistogram(constants.STRANDS_EVENT_LOOP_INPUT_TOKENS, {
+    this.eventLoopInputTokens = this.meter.createHistogram(STRANDS_EVENT_LOOP_INPUT_TOKENS, {
       unit: 'token',
       description: 'Input tokens per model call',
     })
-    this.eventLoopOutputTokens = this.meter.createHistogram(constants.STRANDS_EVENT_LOOP_OUTPUT_TOKENS, {
+    this.eventLoopOutputTokens = this.meter.createHistogram(STRANDS_EVENT_LOOP_OUTPUT_TOKENS, {
       unit: 'token',
       description: 'Output tokens per model call',
     })
     this.eventLoopCacheReadInputTokens = this.meter.createHistogram(
-      constants.STRANDS_EVENT_LOOP_CACHE_READ_INPUT_TOKENS,
+      STRANDS_EVENT_LOOP_CACHE_READ_INPUT_TOKENS,
       {
         unit: 'token',
         description: 'Cache read input tokens per model call',
       }
     )
     this.eventLoopCacheWriteInputTokens = this.meter.createHistogram(
-      constants.STRANDS_EVENT_LOOP_CACHE_WRITE_INPUT_TOKENS,
+      STRANDS_EVENT_LOOP_CACHE_WRITE_INPUT_TOKENS,
       {
         unit: 'token',
         description: 'Cache write input tokens per model call',
       }
     )
-    this.modelTimeToFirstToken = this.meter.createHistogram(constants.STRANDS_MODEL_TIME_TO_FIRST_TOKEN, {
+    this.modelTimeToFirstToken = this.meter.createHistogram(STRANDS_MODEL_TIME_TO_FIRST_TOKEN, {
       unit: 'ms',
       description: 'Time to first token from model',
     })
