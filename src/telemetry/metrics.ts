@@ -10,7 +10,7 @@ import type { Message } from '../types/messages.js'
 import type { Usage, Metrics } from '../models/streaming.js'
 import type { ToolUse } from './types.js'
 import { logger } from '../logging/index.js'
-import { createEmptyUsage, accumulateUsage } from './utils.js'
+import { createEmptyUsage, accumulateUsage } from './types.js'
 
 /**
  * Options for recording tool usage metrics.

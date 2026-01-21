@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createEmptyUsage, accumulateUsage, getModelId } from '../utils.js'
+import { createEmptyUsage, accumulateUsage, getModelId } from '../types.js'
 import type { Model } from '../../models/model.js'
 
 describe('telemetry utils', () => {

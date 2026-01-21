@@ -46,7 +46,7 @@ import {
 import { Tracer, type ActiveSpanHandle } from '../telemetry/tracer.js'
 import { isTelemetryEnabled } from '../telemetry/config.js'
 import type { AttributeValue, Usage } from '../telemetry/types.js'
-import { createEmptyUsage, accumulateUsage, getModelId } from '../telemetry/utils.js'
+import { createEmptyUsage, accumulateUsage, getModelId } from '../telemetry/types.js'
 import { validateIdentifier, IdentifierType } from '../identifier.js'
 import { context, trace } from '@opentelemetry/api'
 
