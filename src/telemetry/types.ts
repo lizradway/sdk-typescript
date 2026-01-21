@@ -9,7 +9,7 @@ export interface TelemetryConfig {
   /**
    * Custom trace attributes to include in all spans.
    */
-  customTraceAttributes?: Record<string, AttributeValue>
+  customTraceAttributes?: Record<string, AttributeValue> | undefined
 }
 
 /**
@@ -25,21 +25,28 @@ export type AttributeValue =
   | Array<null | undefined | boolean>
 
 /**
- * Usage information from model calls.
+ * Token usage statistics for a model invocation.
  */
 export interface Usage {
+  /** Number of tokens in the input (prompt). */
   inputTokens: number
+  /** Number of tokens in the output (completion). */
   outputTokens: number
+  /** Total number of tokens (input + output). */
   totalTokens: number
+  /** Number of input tokens read from cache. */
   cacheReadInputTokens?: number
+  /** Number of input tokens written to cache. */
   cacheWriteInputTokens?: number
 }
 
 /**
- * Metrics from model calls.
+ * Performance metrics for a model invocation.
  */
 export interface Metrics {
+  /** Time to first byte/token in milliseconds. */
   timeToFirstByteMs?: number
+  /** Total latency in milliseconds. */
   latencyMs?: number
 }
 

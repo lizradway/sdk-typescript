@@ -18,6 +18,9 @@ import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http'
 import { logger } from '../logging/index.js'
 
+/** Default interval for exporting metrics in milliseconds. */
+const DEFAULT_METRICS_EXPORT_INTERVAL_MS = 10000
+
 /**
  * Options for configuring the meter.
  */
@@ -295,7 +298,7 @@ export class StrandsTelemetry {
         try {
           const consoleReader = new PeriodicExportingMetricReader({
             exporter: new ConsoleMetricExporter(),
-            exportIntervalMillis: 10000,
+            exportIntervalMillis: DEFAULT_METRICS_EXPORT_INTERVAL_MS,
           })
           metricReaders.push(consoleReader)
         } catch (error) {
@@ -317,7 +320,7 @@ export class StrandsTelemetry {
             const headers = parseOtlpHeaders()
             const otlpReader = new PeriodicExportingMetricReader({
               exporter: new OTLPMetricExporter({ url: metricsUrl, headers }),
-              exportIntervalMillis: 10000,
+              exportIntervalMillis: DEFAULT_METRICS_EXPORT_INTERVAL_MS,
             })
             metricReaders.push(otlpReader)
           }

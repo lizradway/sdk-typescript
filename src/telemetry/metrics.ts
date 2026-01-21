@@ -13,16 +13,33 @@ import { logger } from '../logging/index.js'
 import { createEmptyUsage, accumulateUsage } from './utils.js'
 
 /**
- * A trace representing a single operation or step in the execution flow.
+ * Options for recording tool usage metrics.
  */
-export class Trace {
+export interface AddToolUsageOptions {
+  /** The tool that was invoked. */
+  tool: ToolUse
+  /** Duration of the tool execution in seconds. */
+  duration: number
+  /** The trace to record this tool usage under. */
+  toolTrace: LocalTrace
+  /** Whether the tool execution succeeded. */
+  success: boolean
+  /** The message containing the tool result. */
+  message: Message
+}
+
+/**
+ * A trace for local metrics tracking (distinct from OpenTelemetry spans).
+ * Used to track execution flow and timing within the SDK.
+ */
+export class LocalTrace {
   public readonly id: string
   public name: string
   public rawName?: string
   public parentId?: string
   public startTime: number
   public endTime?: number
-  public children: Trace[] = []
+  public children: LocalTrace[] = []
   public metadata: Record<string, unknown> = {}
   public message?: Message
 
@@ -59,7 +76,7 @@ export class Trace {
   /**
    * Add a child trace to this trace.
    */
-  addChild(child: Trace): void {
+  addChild(child: LocalTrace): void {
     this.children.push(child)
   }
 
@@ -161,13 +178,11 @@ export class EventLoopMetrics {
   public toolMetrics: Map<string, ToolMetrics> = new Map()
   public cycleDurations: number[] = []
   public agentInvocations: AgentInvocation[] = []
-  public traces: Trace[] = []
+  public traces: LocalTrace[] = []
   public accumulatedUsage: Usage = createEmptyUsage()
-  public accumulatedMetrics: Metrics = { latencyMs: 0 }
+  public accumulatedMetrics: Metrics = {}
 
-  private get _metricsClient(): MetricsClient {
-    return MetricsClient.getInstance()
-  }
+  private readonly _metricsClient: MetricsClient = MetricsClient.getInstance()
 
   /**
    * Get the most recent agent invocation.
@@ -181,13 +196,13 @@ export class EventLoopMetrics {
   /**
    * Start a new event loop cycle and create a trace for it.
    */
-  startCycle(attributes: Record<string, string | number | boolean>): { startTime: number; cycleTrace: Trace } {
+  startCycle(attributes: Record<string, string | number | boolean>): { startTime: number; cycleTrace: LocalTrace } {
     this._metricsClient.eventLoopCycleCount.add(1, attributes)
     this._metricsClient.eventLoopStartCycle.add(1, attributes)
     this.cycleCount++
 
     const startTime = Date.now() / 1000
-    const cycleTrace = new Trace(`Cycle ${this.cycleCount}`, undefined, startTime)
+    const cycleTrace = new LocalTrace(`Cycle ${this.cycleCount}`, undefined, startTime)
     this.traces.push(cycleTrace)
 
     // Add cycle to latest agent invocation (Python: self.agent_invocations[-1].cycles.append)
@@ -207,7 +222,7 @@ export class EventLoopMetrics {
    */
   endCycle(
     startTime: number,
-    cycleTrace: Trace,
+    cycleTrace: LocalTrace,
     attributes?: Record<string, string | number | boolean>,
     message?: Message
   ): void {
@@ -229,13 +244,8 @@ export class EventLoopMetrics {
   /**
    * Record metrics for a tool invocation.
    */
-  addToolUsage(
-    tool: ToolUse,
-    duration: number,
-    toolTrace: Trace,
-    success: boolean,
-    message: Message
-  ): void {
+  addToolUsage(options: AddToolUsageOptions): void {
+    const { tool, duration, toolTrace, success, message } = options
     const toolName = tool.name ?? 'unknown_tool'
     const toolUseId = tool.toolUseId ?? 'unknown'
 
@@ -299,8 +309,10 @@ export class EventLoopMetrics {
    * Update the accumulated performance metrics with new metrics data.
    */
   updateMetrics(metrics: Metrics): void {
-    this._metricsClient.eventLoopLatency.record(metrics.latencyMs)
-    this.accumulatedMetrics.latencyMs += metrics.latencyMs
+    if (metrics.latencyMs !== undefined) {
+      this._metricsClient.eventLoopLatency.record(metrics.latencyMs)
+      this.accumulatedMetrics.latencyMs = (this.accumulatedMetrics.latencyMs ?? 0) + metrics.latencyMs
+    }
   }
 
   /**

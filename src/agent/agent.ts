@@ -19,7 +19,7 @@ import {
   type ToolStreamGenerator,
   ToolUseBlock,
 } from '../index.js'
-import { EventLoopMetrics, Trace } from '../telemetry/metrics.js'
+import { EventLoopMetrics, LocalTrace } from '../telemetry/metrics.js'
 import { systemPromptFromData } from '../types/messages.js'
 import { normalizeError, ConcurrentInvocationError } from '../errors.js'
 import type { BaseModelConfig, Model, StreamOptions } from '../models/model.js'
@@ -252,9 +252,7 @@ export class Agent implements AgentData {
 
     // Initialize tracer if global telemetry is enabled
     if (isTelemetryEnabled()) {
-      const tracerConfig = config?.customTraceAttributes 
-        ? { customTraceAttributes: config.customTraceAttributes }
-        : undefined
+      const tracerConfig = { customTraceAttributes: config?.customTraceAttributes }
       this._tracer = new Tracer(tracerConfig)
     }
 
@@ -852,7 +850,7 @@ export class Agent implements AgentData {
 
     // Track tool execution time for EventLoopMetrics
     const toolStartTime = Date.now() / 1000
-    const toolTrace = new Trace(`Tool: ${toolUseBlock.name}`, undefined, toolStartTime)
+    const toolTrace = new LocalTrace(`Tool: ${toolUseBlock.name}`, undefined, toolStartTime)
 
     try {
       // Execute tool with the tool span as active context for trace propagation
@@ -882,13 +880,13 @@ export class Agent implements AgentData {
         // Track tool failure in EventLoopMetrics
         const toolEndTime = Date.now() / 1000
         const toolDuration = toolEndTime - toolStartTime
-        this._eventLoopMetrics.addToolUsage(
-          toolUse,
-          toolDuration,
+        this._eventLoopMetrics.addToolUsage({
+          tool: toolUse,
+          duration: toolDuration,
           toolTrace,
-          false, // success = false
-          new Message({ role: 'user', content: [errorResult] })
-        )
+          success: false,
+          message: new Message({ role: 'user', content: [errorResult] }),
+        })
 
         return errorResult
       }
@@ -903,13 +901,13 @@ export class Agent implements AgentData {
       // Track tool success in EventLoopMetrics
       const toolEndTime = Date.now() / 1000
       const toolDuration = toolEndTime - toolStartTime
-      this._eventLoopMetrics.addToolUsage(
-        toolUse,
-        toolDuration,
+      this._eventLoopMetrics.addToolUsage({
+        tool: toolUse,
+        duration: toolDuration,
         toolTrace,
-        true, // success = true
-        new Message({ role: 'user', content: [toolResult] })
-      )
+        success: true,
+        message: new Message({ role: 'user', content: [toolResult] }),
+      })
 
       // Tool already returns ToolResultBlock directly
       return toolResult
@@ -933,13 +931,13 @@ export class Agent implements AgentData {
       // Track tool error in EventLoopMetrics
       const toolEndTime = Date.now() / 1000
       const toolDuration = toolEndTime - toolStartTime
-      this._eventLoopMetrics.addToolUsage(
-        toolUse,
-        toolDuration,
+      this._eventLoopMetrics.addToolUsage({
+        tool: toolUse,
+        duration: toolDuration,
         toolTrace,
-        false, // success = false
-        new Message({ role: 'user', content: [errorResult] })
-      )
+        success: false,
+        message: new Message({ role: 'user', content: [errorResult] }),
+      })
 
       return errorResult
     }

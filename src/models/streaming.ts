@@ -1,5 +1,9 @@
 import type { Role, StopReason } from '../types/messages.js'
 import type { JSONValue } from '../types/json.js'
+import type { Usage, Metrics } from '../telemetry/types.js'
+
+// Re-export for backward compatibility
+export type { Usage, Metrics }
 
 /**
  * ModelStreamEvent types for Model interactions.
@@ -356,47 +360,4 @@ export interface ReasoningContentDelta {
    * Incremental redacted content data.
    */
   redactedContent?: Uint8Array
-}
-
-/**
- * Token usage statistics for a model invocation.
- * Tracks input, output, and total tokens, plus cache-related metrics.
- */
-export interface Usage {
-  /**
-   * Number of tokens in the input (prompt).
-   */
-  inputTokens: number
-
-  /**
-   * Number of tokens in the output (completion).
-   */
-  outputTokens: number
-
-  /**
-   * Total number of tokens (input + output).
-   */
-  totalTokens: number
-
-  /**
-   * Number of input tokens read from cache.
-   * This can reduce latency and cost.
-   */
-  cacheReadInputTokens?: number
-
-  /**
-   * Number of input tokens written to cache.
-   * These tokens can be reused in future requests.
-   */
-  cacheWriteInputTokens?: number
-}
-
-/**
- * Performance metrics for a model invocation.
- */
-export interface Metrics {
-  /**
-   * Latency in milliseconds.
-   */
-  latencyMs: number
 }

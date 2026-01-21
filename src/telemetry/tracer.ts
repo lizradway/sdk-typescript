@@ -82,6 +82,9 @@ export interface StartEventLoopCycleSpanOptions {
   customTraceAttributes?: Record<string, AttributeValue>
 }
 
+/** Maximum recursion depth for JSON encoding to prevent stack overflow. */
+const MAX_JSON_ENCODE_DEPTH = 50
+
 /**
  * Serialize objects to JSON strings for inclusion in spans.
  * Handles circular references and special types.
@@ -121,7 +124,7 @@ class JSONEncoder {
    */
   private _processValue(value: unknown, seen: WeakSet<object>, depth: number): unknown {
     // Limit recursion depth to prevent memory issues
-    if (depth > 50) {
+    if (depth > MAX_JSON_ENCODE_DEPTH) {
       return '<max depth reached>'
     }
 
@@ -689,78 +692,6 @@ export class Tracer {
       // Always pop context, even if an error occurred
       this._popContext()
     }
-  }
-
-  /**
-   * Execute an async function within a new span.
-   * The span is automatically ended when the function completes or throws.
-   * Use this for simple async operations that don't involve generators.
-   * 
-   * @param spanName - Name of the span
-   * @param attributes - Span attributes
-   * @param fn - Async function to execute within the span
-   * @returns The result of the function
-   */
-  async withSpan<T>(
-    spanName: string,
-    attributes: Record<string, AttributeValue>,
-    fn: (span: Span) => Promise<T>,
-  ): Promise<T> {
-    const options: SpanOptions = { attributes }
-    const parentContext = this._getCurrentContext()
-    
-    return this._tracer.startActiveSpan(spanName, options, parentContext, async (span) => {
-      try {
-        span.setAttribute('gen_ai.event.start_time', new Date().toISOString())
-        const result = await fn(span)
-        span.setAttribute('gen_ai.event.end_time', new Date().toISOString())
-        span.setStatus({ code: SpanStatusCode.OK })
-        return result
-      } catch (error) {
-        span.setAttribute('gen_ai.event.end_time', new Date().toISOString())
-        span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message })
-        span.recordException(error as Error)
-        throw error
-      } finally {
-        span.end()
-      }
-    })
-  }
-
-  /**
-   * Execute a sync function within a new span.
-   * The span is automatically ended when the function completes or throws.
-   * Use this for simple sync operations.
-   * 
-   * @param spanName - Name of the span
-   * @param attributes - Span attributes
-   * @param fn - Function to execute within the span
-   * @returns The result of the function
-   */
-  withSpanSync<T>(
-    spanName: string,
-    attributes: Record<string, AttributeValue>,
-    fn: (span: Span) => T,
-  ): T {
-    const options: SpanOptions = { attributes }
-    const parentContext = this._getCurrentContext()
-    
-    return this._tracer.startActiveSpan(spanName, options, parentContext, (span) => {
-      try {
-        span.setAttribute('gen_ai.event.start_time', new Date().toISOString())
-        const result = fn(span)
-        span.setAttribute('gen_ai.event.end_time', new Date().toISOString())
-        span.setStatus({ code: SpanStatusCode.OK })
-        return result
-      } catch (error) {
-        span.setAttribute('gen_ai.event.end_time', new Date().toISOString())
-        span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message })
-        span.recordException(error as Error)
-        throw error
-      } finally {
-        span.end()
-      }
-    })
   }
 
   /**

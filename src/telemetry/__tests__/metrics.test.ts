@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
-  Trace,
+  LocalTrace,
   ToolMetrics,
   AgentInvocation,
   EventLoopMetrics,
@@ -9,10 +9,10 @@ import {
 } from '../metrics.js'
 import { Message, TextBlock, ToolResultBlock } from '../../types/messages.js'
 
-describe('Trace', () => {
+describe('LocalTrace', () => {
   describe('constructor', () => {
     it('should create a trace with required name', () => {
-      const trace = new Trace('test-trace')
+      const trace = new LocalTrace('test-trace')
 
       expect(trace.name).toBe('test-trace')
       expect(trace.id).toBeDefined()
@@ -26,7 +26,7 @@ describe('Trace', () => {
       const metadata = { key: 'value' }
       const startTime = 1000
 
-      const trace = new Trace('test-trace', 'parent-id', startTime, 'raw-name', metadata, message)
+      const trace = new LocalTrace('test-trace', 'parent-id', startTime, 'raw-name', metadata, message)
 
       expect(trace.name).toBe('test-trace')
       expect(trace.parentId).toBe('parent-id')
@@ -38,7 +38,7 @@ describe('Trace', () => {
 
     it('should use current time when startTime is not provided', () => {
       const before = Date.now() / 1000
-      const trace = new Trace('test-trace')
+      const trace = new LocalTrace('test-trace')
       const after = Date.now() / 1000
 
       expect(trace.startTime).toBeGreaterThanOrEqual(before)
@@ -48,7 +48,7 @@ describe('Trace', () => {
 
   describe('end', () => {
     it('should set endTime to current time when no argument provided', () => {
-      const trace = new Trace('test-trace')
+      const trace = new LocalTrace('test-trace')
       const before = Date.now() / 1000
       trace.end()
       const after = Date.now() / 1000
@@ -58,7 +58,7 @@ describe('Trace', () => {
     })
 
     it('should set endTime to provided value', () => {
-      const trace = new Trace('test-trace')
+      const trace = new LocalTrace('test-trace')
       trace.end(2000)
 
       expect(trace.endTime).toBe(2000)
@@ -67,8 +67,8 @@ describe('Trace', () => {
 
   describe('addChild', () => {
     it('should add a child trace', () => {
-      const parent = new Trace('parent')
-      const child = new Trace('child')
+      const parent = new LocalTrace('parent')
+      const child = new LocalTrace('child')
 
       parent.addChild(child)
 
@@ -77,9 +77,9 @@ describe('Trace', () => {
     })
 
     it('should add multiple children', () => {
-      const parent = new Trace('parent')
-      const child1 = new Trace('child1')
-      const child2 = new Trace('child2')
+      const parent = new LocalTrace('parent')
+      const child1 = new LocalTrace('child1')
+      const child2 = new LocalTrace('child2')
 
       parent.addChild(child1)
       parent.addChild(child2)
@@ -90,13 +90,13 @@ describe('Trace', () => {
 
   describe('duration', () => {
     it('should return undefined when endTime is not set', () => {
-      const trace = new Trace('test-trace', undefined, 1000)
+      const trace = new LocalTrace('test-trace', undefined, 1000)
 
       expect(trace.duration()).toBeUndefined()
     })
 
     it('should calculate duration correctly', () => {
-      const trace = new Trace('test-trace', undefined, 1000)
+      const trace = new LocalTrace('test-trace', undefined, 1000)
       trace.end(1500)
 
       expect(trace.duration()).toBe(500)
@@ -105,7 +105,7 @@ describe('Trace', () => {
 
   describe('addMessage', () => {
     it('should add a message to the trace', () => {
-      const trace = new Trace('test-trace')
+      const trace = new LocalTrace('test-trace')
       const message = new Message({ role: 'user', content: [new TextBlock('test')] })
 
       trace.addMessage(message)
@@ -116,7 +116,7 @@ describe('Trace', () => {
 
   describe('toDict', () => {
     it('should convert trace to dictionary representation', () => {
-      const trace = new Trace('test-trace', 'parent-id', 1000, 'raw-name', { key: 'value' })
+      const trace = new LocalTrace('test-trace', 'parent-id', 1000, 'raw-name', { key: 'value' })
       trace.end(1500)
 
       const dict = trace.toDict()
@@ -133,8 +133,8 @@ describe('Trace', () => {
     })
 
     it('should include children in dictionary', () => {
-      const parent = new Trace('parent', undefined, 1000)
-      const child = new Trace('child', undefined, 1100)
+      const parent = new LocalTrace('parent', undefined, 1000)
+      const child = new LocalTrace('child', undefined, 1100)
       child.end(1200)
       parent.addChild(child)
       parent.end(1500)
@@ -286,13 +286,13 @@ describe('EventLoopMetrics', () => {
   describe('addToolUsage', () => {
     it('should record tool usage metrics', () => {
       const tool = { name: 'test-tool', toolUseId: 'tool-123', input: { key: 'value' } }
-      const toolTrace = new Trace('tool-trace')
+      const toolTrace = new LocalTrace('tool-trace')
       const message = new Message({
         role: 'user',
         content: [new ToolResultBlock({ toolUseId: 'tool-123', status: 'success', content: [] })],
       })
 
-      eventLoopMetrics.addToolUsage(tool, 0.5, toolTrace, true, message)
+      eventLoopMetrics.addToolUsage({ tool, duration: 0.5, toolTrace, success: true, message })
 
       expect(eventLoopMetrics.toolMetrics.has('test-tool')).toBe(true)
       const toolMetric = eventLoopMetrics.toolMetrics.get('test-tool')
@@ -302,10 +302,10 @@ describe('EventLoopMetrics', () => {
 
     it('should handle tool with missing name', () => {
       const tool = { name: undefined as unknown as string, toolUseId: 'tool-123', input: {} }
-      const toolTrace = new Trace('tool-trace')
+      const toolTrace = new LocalTrace('tool-trace')
       const message = new Message({ role: 'user', content: [] })
 
-      eventLoopMetrics.addToolUsage(tool, 0.5, toolTrace, true, message)
+      eventLoopMetrics.addToolUsage({ tool, duration: 0.5, toolTrace, success: true, message })
 
       expect(eventLoopMetrics.toolMetrics.has('unknown_tool')).toBe(true)
     })
@@ -314,8 +314,8 @@ describe('EventLoopMetrics', () => {
       const tool = { name: 'test-tool', toolUseId: 'tool-123', input: {} }
       const message = new Message({ role: 'user', content: [] })
 
-      eventLoopMetrics.addToolUsage(tool, 0.5, new Trace('trace1'), true, message)
-      eventLoopMetrics.addToolUsage(tool, 0.3, new Trace('trace2'), false, message)
+      eventLoopMetrics.addToolUsage({ tool, duration: 0.5, toolTrace: new LocalTrace('trace1'), success: true, message })
+      eventLoopMetrics.addToolUsage({ tool, duration: 0.3, toolTrace: new LocalTrace('trace2'), success: false, message })
 
       const toolMetric = eventLoopMetrics.toolMetrics.get('test-tool')
       expect(toolMetric?.callCount).toBe(2)
@@ -430,7 +430,7 @@ describe('EventLoopMetrics', () => {
     it('should include tool usage in summary', () => {
       const tool = { name: 'test-tool', toolUseId: 'tool-123', input: { key: 'value' } }
       const message = new Message({ role: 'user', content: [] })
-      eventLoopMetrics.addToolUsage(tool, 0.5, new Trace('trace'), true, message)
+      eventLoopMetrics.addToolUsage({ tool, duration: 0.5, toolTrace: new LocalTrace('trace'), success: true, message })
 
       const summary = eventLoopMetrics.getSummary()
       const toolUsage = summary.tool_usage as Record<string, unknown>
@@ -527,7 +527,7 @@ describe('metricsToString', () => {
     const eventLoopMetrics = new EventLoopMetrics()
     const tool = { name: 'calculator', toolUseId: 'calc-123', input: { a: 1, b: 2 } }
     const message = new Message({ role: 'user', content: [] })
-    eventLoopMetrics.addToolUsage(tool, 0.5, new Trace('trace'), true, message)
+    eventLoopMetrics.addToolUsage({ tool, duration: 0.5, toolTrace: new LocalTrace('trace'), success: true, message })
 
     const result = metricsToString(eventLoopMetrics)
 
@@ -542,7 +542,7 @@ describe('metricsToString', () => {
     eventLoopMetrics.resetUsageMetrics()
     const { startTime, cycleTrace } = eventLoopMetrics.startCycle({ event_loop_cycle_id: 'cycle-1' })
 
-    const childTrace = new Trace('child-operation', undefined, startTime + 0.1)
+    const childTrace = new LocalTrace('child-operation', undefined, startTime + 0.1)
     childTrace.end(startTime + 0.2)
     cycleTrace.addChild(childTrace)
 
@@ -557,10 +557,10 @@ describe('metricsToString', () => {
   it('should use rawName when available', () => {
     const eventLoopMetrics = new EventLoopMetrics()
     const tool = { name: 'test-tool', toolUseId: 'tool-123', input: {} }
-    const toolTrace = new Trace('tool-trace')
+    const toolTrace = new LocalTrace('tool-trace')
     const message = new Message({ role: 'user', content: [] })
 
-    eventLoopMetrics.addToolUsage(tool, 0.5, toolTrace, true, message)
+    eventLoopMetrics.addToolUsage({ tool, duration: 0.5, toolTrace, success: true, message })
 
     // The rawName should be set by addToolUsage
     expect(toolTrace.rawName).toBe('test-tool - tool-123')
