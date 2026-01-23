@@ -174,12 +174,6 @@ describe('Agent Telemetry Integration', () => {
       const hasAssistantMessage = agent.messages.some((m) => m.role === 'assistant')
       expect(hasUserMessage).toBe(true)
       expect(hasAssistantMessage).toBe(true)
-
-      // Verify trace span was created
-      expect(agent.traceSpan).toBeDefined()
-      if (agent.traceSpan) {
-        expect(agent.traceSpan.isRecording()).toBe(false) // Span should be ended after invocation
-      }
     })
 
     it('handles telemetry with model configuration', async () => {
@@ -220,29 +214,7 @@ describe('Agent Telemetry Integration', () => {
       expect(result2.stopReason).toBeDefined()
     })
 
-    it('exposes trace span through agent API for testing', async () => {
-      const agent = new Agent({
-        model: bedrock.createModel(),
-        printer: false,
-      })
-
-      // Before invocation, trace span should be undefined
-      expect(agent.traceSpan).toBeUndefined()
-
-      // Invoke agent
-      const { result } = await collectGenerator(agent.stream('Say hello'))
-
-      // After invocation, trace span should exist
-      expect(agent.traceSpan).toBeDefined()
-      expect(result).toBeDefined()
-
-      // Span should be ended (not recording)
-      if (agent.traceSpan) {
-        expect(agent.traceSpan.isRecording()).toBe(false)
-      }
-    })
-
-    it('trace span is undefined when telemetry is disabled', async () => {
+    it('agent invocation completes successfully with telemetry', async () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
@@ -251,9 +223,9 @@ describe('Agent Telemetry Integration', () => {
       // Invoke agent
       const { result } = await collectGenerator(agent.stream('Say hello'))
 
-      // Trace span should be undefined when telemetry is disabled
-      expect(agent.traceSpan).toBeUndefined()
+      // Verify invocation completed
       expect(result).toBeDefined()
+      expect(result.stopReason).toBeDefined()
     })
   })
 
@@ -269,9 +241,6 @@ describe('Agent Telemetry Integration', () => {
 
       // Verify result
       expect(result).toBeDefined()
-
-      // Verify trace span was created
-      expect(agent.traceSpan).toBeDefined()
     })
 
     it('verifies tool name is captured in tool call spans', async () => {
@@ -287,9 +256,6 @@ describe('Agent Telemetry Integration', () => {
       )
 
       expect(result).toBeDefined()
-
-      // Verify trace span was created
-      expect(agent.traceSpan).toBeDefined()
     })
 
     it('verifies token usage is captured in model spans', async () => {
@@ -302,9 +268,6 @@ describe('Agent Telemetry Integration', () => {
       const { result } = await collectGenerator(agent.stream('Say hello'))
 
       expect(result).toBeDefined()
-
-      // Verify trace span was created
-      expect(agent.traceSpan).toBeDefined()
     })
 
     it('verifies stop reason is captured in model spans', async () => {
@@ -318,9 +281,6 @@ describe('Agent Telemetry Integration', () => {
 
       expect(result).toBeDefined()
       expect(result.stopReason).toBeDefined()
-
-      // Verify trace span was created
-      expect(agent.traceSpan).toBeDefined()
     })
   })
 
@@ -338,9 +298,6 @@ describe('Agent Telemetry Integration', () => {
       )
 
       expect(result).toBeDefined()
-
-      // Verify trace span was created
-      expect(agent.traceSpan).toBeDefined()
     })
   })
 
@@ -368,9 +325,6 @@ describe('Agent Telemetry Integration', () => {
 
       // Agent should still complete despite tool error
       expect(result).toBeDefined()
-
-      // Verify trace span was created
-      expect(agent.traceSpan).toBeDefined()
     })
   })
 
@@ -400,10 +354,6 @@ describe('Agent Telemetry Integration', () => {
 
       expect(result1).toBeDefined()
       expect(result2).toBeDefined()
-
-      // Verify trace spans were created for both agents
-      expect(agent1.traceSpan).toBeDefined()
-      expect(agent2.traceSpan).toBeDefined()
     })
   })
 })

@@ -19,7 +19,6 @@ import {
   type ToolStreamGenerator,
   ToolUseBlock,
 } from '../index.js'
-import { EventLoopMetrics, LocalTrace } from '../telemetry/metrics.js'
 import { systemPromptFromData } from '../types/messages.js'
 import { normalizeError, ConcurrentInvocationError } from '../errors.js'
 import type { BaseModelConfig, Model, StreamOptions } from '../models/model.js'
@@ -43,9 +42,10 @@ import {
   MessageAddedEvent,
   ModelStreamEventHook,
 } from '../hooks/events.js'
-import { Tracer, type ActiveSpanHandle } from '../telemetry/tracer.js'
+import { Tracer } from '../telemetry/tracer.js'
 import { isTelemetryEnabled } from '../telemetry/config.js'
-import type { AttributeValue, Usage } from '../telemetry/types.js'
+import type { Usage } from '../telemetry/types.js'
+import type { AttributeValue } from '@opentelemetry/api'
 import { createEmptyUsage, accumulateUsage, getModelId } from '../telemetry/utils.js'
 import { validateIdentifier, IdentifierType } from '../identifier.js'
 import { context, trace } from '@opentelemetry/api'
@@ -134,7 +134,7 @@ export type AgentConfig = {
    */
   customTraceAttributes?: Record<string, AttributeValue>
   /**
-   * Optional name for the agent, used in telemetry spans.
+   * Optional name for the agent.
    * Defaults to "Strands Agents" if not provided.
    */
   name?: string
@@ -193,12 +193,12 @@ export class Agent implements AgentData {
   public systemPrompt?: SystemPrompt
 
   /**
-   * The name of the agent, used in telemetry spans.
+   * The name of the agent.
    */
   public name: string
 
   /**
-   * The unique identifier of the agent instance, used in telemetry spans.
+   * The unique identifier of the agent instance.
    */
   public readonly agentId: string
 
@@ -208,8 +208,7 @@ export class Agent implements AgentData {
   private _isInvoking: boolean = false
   private _printer?: Printer
   private _tracer?: Tracer
-  private _traceSpan?: ActiveSpanHandle | undefined
-  private _eventLoopMetrics: EventLoopMetrics
+  private _traceSpan?: import('@opentelemetry/api').Span | undefined
   private _accumulatedTokenUsage: Usage = createEmptyUsage()
   private _inputMessagesForTelemetry: Message[] = []
 
@@ -256,9 +255,6 @@ export class Agent implements AgentData {
       this._tracer = new Tracer(tracerConfig)
     }
 
-    // Initialize event loop metrics for tracking
-    this._eventLoopMetrics = new EventLoopMetrics()
-
     this._initialized = false
   }
 
@@ -301,9 +297,9 @@ export class Agent implements AgentData {
    * Stores the span on the instance for use in the event loop.
    *
    * @param messages - The input messages
-   * @returns The created span handle, or undefined if telemetry is disabled
+   * @returns The created span, or undefined if telemetry is disabled
    */
-  private _startAgentTraceSpan(messages: Message[]): ActiveSpanHandle | undefined {
+  private _startAgentTraceSpan(messages: Message[]): import('@opentelemetry/api').Span | undefined {
     if (!this._tracer) {
       return undefined
     }
@@ -359,24 +355,6 @@ export class Agent implements AgentData {
    */
   get toolRegistry(): ToolRegistry {
     return this._toolRegistry
-  }
-
-  /**
-   * The current trace span for telemetry (if telemetry is enabled).
-   * Returns the span object for inspection in tests or external telemetry systems.
-   * Matches the Python SDK's trace_span property.
-   */
-  get traceSpan(): import('@opentelemetry/api').Span | undefined {
-    return this._traceSpan?.span
-  }
-
-  /**
-   * Event loop metrics for tracking agent execution statistics.
-   * Provides access to cycle counts, tool usage, token consumption, and timing data.
-   * Matches the Python SDK's event_loop_metrics property.
-   */
-  get eventLoopMetrics(): EventLoopMetrics {
-    return this._eventLoopMetrics
   }
 
   /**
@@ -479,9 +457,6 @@ export class Agent implements AgentData {
     // Normalize input to get the user messages for telemetry
     const inputMessages = this._normalizeInput(args)
     
-    // Start a new agent invocation in event loop metrics (always, regardless of telemetry)
-    this._eventLoopMetrics.resetUsageMetrics()
-    
     // Start agent trace span with the input messages (for Langfuse input capture)
     const traceSpan = this._startAgentTraceSpan(inputMessages)
     if (traceSpan) {
@@ -526,11 +501,6 @@ export class Agent implements AgentData {
       // Context stack handles parenting automatically
       const cycleSpan = this._tracer?.startEventLoopCycleSpan({ cycleId, messages: this.messages })
 
-      // Start cycle tracking in EventLoopMetrics
-      const { startTime: cycleStartTime, cycleTrace } = this._eventLoopMetrics.startCycle({
-        event_loop_cycle_id: cycleId,
-      })
-
       try {
         const modelResult = yield* this.invokeModel(currentArgs)
         currentArgs = undefined // Only pass args on first invocation
@@ -543,11 +513,6 @@ export class Agent implements AgentData {
           if (cycleSpan && this._tracer) {
             this._tracer.endEventLoopCycleSpan(cycleSpan)
           }
-
-          // End cycle tracking in EventLoopMetrics
-          this._eventLoopMetrics.endCycle(cycleStartTime, cycleTrace, {
-            event_loop_cycle_id: cycleId,
-          }, modelResult.message)
 
           return new AgentResult({
             stopReason: modelResult.stopReason,
@@ -568,22 +533,12 @@ export class Agent implements AgentData {
           this._tracer.endEventLoopCycleSpan(cycleSpan)
         }
 
-        // End cycle tracking in EventLoopMetrics
-        this._eventLoopMetrics.endCycle(cycleStartTime, cycleTrace, {
-          event_loop_cycle_id: cycleId,
-        }, modelResult.message)
-
         // Continue loop
       } catch (error) {
         // End cycle span with error if telemetry is enabled
         if (cycleSpan && this._tracer) {
           this._tracer.endEventLoopCycleSpan(cycleSpan, error as Error)
         }
-
-        // End cycle tracking in EventLoopMetrics (even on error)
-        this._eventLoopMetrics.endCycle(cycleStartTime, cycleTrace, {
-          event_loop_cycle_id: cycleId,
-        })
 
         throw error
       }
@@ -729,14 +684,6 @@ export class Agent implements AgentData {
     if (result.value.metadata?.usage) {
       const usage = result.value.metadata.usage
       accumulateUsage(this._accumulatedTokenUsage, usage)
-      
-      // Update EventLoopMetrics with token usage
-      this._eventLoopMetrics.updateUsage(usage)
-      
-      // Update latency metrics if available
-      if (result.value.metadata?.metrics?.latencyMs) {
-        this._eventLoopMetrics.updateMetrics(result.value.metadata.metrics)
-      }
     }
 
     // End model span if telemetry is enabled
@@ -847,15 +794,11 @@ export class Agent implements AgentData {
     // Context stack handles parenting automatically
     const toolSpan = this._tracer?.startToolCallSpan({ tool: toolUse })
 
-    // Track tool execution time for EventLoopMetrics
-    const toolStartTime = Date.now() / 1000
-    const toolTrace = new LocalTrace(`Tool: ${toolUseBlock.name}`, undefined, toolStartTime)
-
     try {
       // Execute tool with the tool span as active context for trace propagation
       // This allows MCP instrumentation to find the active span and inject trace context
       const toolGenerator = toolSpan 
-        ? this._executeToolWithActiveSpan(tool, toolContext, toolSpan.span)
+        ? this._executeToolWithActiveSpan(tool, toolContext, toolSpan)
         : tool.stream(toolContext)
 
       // Use yield* to delegate to the tool generator and capture the return value
@@ -876,17 +819,6 @@ export class Agent implements AgentData {
           this._tracer.endToolCallSpan(toolSpan, errorResult)
         }
 
-        // Track tool failure in EventLoopMetrics
-        const toolEndTime = Date.now() / 1000
-        const toolDuration = toolEndTime - toolStartTime
-        this._eventLoopMetrics.addToolUsage({
-          tool: toolUse,
-          duration: toolDuration,
-          toolTrace,
-          success: false,
-          message: new Message({ role: 'user', content: [errorResult] }),
-        })
-
         return errorResult
       }
 
@@ -896,17 +828,6 @@ export class Agent implements AgentData {
       if (toolSpan && this._tracer) {
         this._tracer.endToolCallSpan(toolSpan, toolResult)
       }
-
-      // Track tool success in EventLoopMetrics
-      const toolEndTime = Date.now() / 1000
-      const toolDuration = toolEndTime - toolStartTime
-      this._eventLoopMetrics.addToolUsage({
-        tool: toolUse,
-        duration: toolDuration,
-        toolTrace,
-        success: true,
-        message: new Message({ role: 'user', content: [toolResult] }),
-      })
 
       // Tool already returns ToolResultBlock directly
       return toolResult
@@ -926,17 +847,6 @@ export class Agent implements AgentData {
       if (toolSpan && this._tracer) {
         this._tracer.endToolCallSpan(toolSpan, errorResult, toolError)
       }
-
-      // Track tool error in EventLoopMetrics
-      const toolEndTime = Date.now() / 1000
-      const toolDuration = toolEndTime - toolStartTime
-      this._eventLoopMetrics.addToolUsage({
-        tool: toolUse,
-        duration: toolDuration,
-        toolTrace,
-        success: false,
-        message: new Message({ role: 'user', content: [errorResult] }),
-      })
 
       return errorResult
     }

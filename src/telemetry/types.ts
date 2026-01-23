@@ -2,6 +2,8 @@
  * Type definitions for OpenTelemetry telemetry support.
  */
 
+import type { AttributeValue } from '@opentelemetry/api'
+
 /**
  * Telemetry configuration options for the Tracer.
  */
@@ -11,18 +13,6 @@ export interface TelemetryConfig {
    */
   customTraceAttributes?: Record<string, AttributeValue> | undefined
 }
-
-/**
- * OpenTelemetry attribute value types.
- * Must match OpenTelemetry API's AttributeValue type.
- */
-export type AttributeValue = 
-  | string 
-  | number 
-  | boolean 
-  | Array<null | undefined | string> 
-  | Array<null | undefined | number> 
-  | Array<null | undefined | boolean>
 
 /**
  * Token usage statistics for a model invocation.

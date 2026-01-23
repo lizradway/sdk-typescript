@@ -9,27 +9,18 @@
  */
 
 import { context, SpanStatusCode, SpanKind, trace } from '@opentelemetry/api'
-import type { Span, Tracer as OtelTracer, SpanOptions } from '@opentelemetry/api'
+import type { Span, Tracer as OtelTracer, SpanOptions, AttributeValue } from '@opentelemetry/api'
 import type { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'
 import { logger } from '../logging/index.js'
 import { initializeTracerProvider, isTelemetryEnabled } from './config.js'
 import type {
   TelemetryConfig,
-  AttributeValue,
   Usage,
   Metrics,
   ToolUse,
   ToolResult,
 } from './types.js'
 import type { Message } from '../types/messages.js'
-
-/**
- * Handle returned by span start methods.
- * Contains the span for manual lifecycle management in async generators.
- */
-export interface ActiveSpanHandle {
-  span: Span
-}
 
 /**
  * Options for ending a model invocation span.
@@ -90,161 +81,123 @@ const MAX_JSON_ENCODE_DEPTH = 50
  * Handles circular references and special types.
  */
 export function serialize(value: unknown): string {
-  return _encoder.encode(value)
+  try {
+    const seen = new WeakSet<object>()
+    const processed = processValue(value, seen, 0)
+    const result = JSON.stringify(processed)
+    return result ?? 'undefined'
+  } catch (error) {
+    logger.warn(`error=<${error}> | failed to encode value, returning empty object`)
+    return '{}'
+  }
+}
+
+/**
+ * Process any value, handling containers recursively.
+ */
+function processValue(value: unknown, seen: WeakSet<object>, depth: number): unknown {
+  // Limit recursion depth to prevent memory issues
+  if (depth > MAX_JSON_ENCODE_DEPTH) {
+    return '<max depth reached>'
+  }
+
+  if (value === null) return null
+  if (value === undefined) return undefined
+
+  if (value instanceof Date) return value.toISOString()
+
+  if (value instanceof Error) {
+    return { name: value.name, message: value.message, stack: value.stack }
+  }
+
+  if (value instanceof Map) {
+    if (seen.has(value)) return '<replaced>'
+    seen.add(value)
+    return {
+      __type__: 'Map',
+      value: Array.from(value.entries()).map(([k, v]) => [
+        processValue(k, seen, depth + 1),
+        processValue(v, seen, depth + 1),
+      ]),
+    }
+  }
+
+  if (value instanceof Set) {
+    if (seen.has(value)) return '<replaced>'
+    seen.add(value)
+    return {
+      __type__: 'Set',
+      value: Array.from(value).map((item) => processValue(item, seen, depth + 1)),
+    }
+  }
+
+  if (value instanceof RegExp) {
+    return { __type__: 'RegExp', source: value.source, flags: value.flags }
+  }
+
+  if (typeof value === 'bigint') {
+    return { __type__: 'BigInt', value: value.toString() }
+  }
+
+  if (typeof value === 'symbol') {
+    return { __type__: 'Symbol', value: value.toString() }
+  }
+
+  if (typeof value === 'function') {
+    return { __type__: 'Function', name: (value as unknown as Record<string, unknown>).name ?? 'anonymous' }
+  }
+
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    if (seen.has(value as object)) return '<replaced>'
+    seen.add(value as object)
+
+    const obj = value as Record<string, unknown>
+
+    if (typeof obj.toJSON === 'function') {
+      try {
+        return processValue(obj.toJSON(), seen, depth + 1)
+      } catch {
+        // Fall through to default object handling
+      }
+    }
+
+    if (typeof obj.toString === 'function' && obj.toString !== Object.prototype.toString) {
+      try {
+        return obj.toString()
+      } catch {
+        // Fall through to default object handling
+      }
+    }
+
+    const processed: Record<string, unknown> = {}
+    for (const [key, val] of Object.entries(obj)) {
+      processed[key] = processValue(val, seen, depth + 1)
+    }
+    return processed
+  }
+
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return '<replaced>'
+    seen.add(value)
+    return value.map((item) => processValue(item, seen, depth + 1))
+  }
+
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return value
+  }
+
+  try {
+    JSON.stringify(value)
+    return value
+  } catch {
+    return '<replaced>'
+  }
 }
 
 /**
  * Map content blocks to OTEL parts format.
  */
 export function mapContentBlocksToOtelParts(contentBlocks: unknown[]): Record<string, unknown>[] {
-  return _mapContentBlocksToOtelParts(contentBlocks)
-}
-
-/**
- * Custom JSON encoder that handles non-serializable types.
- */
-class JSONEncoder {
-  /**
-   * Recursively encode objects, preserving structure and only replacing unserializable values.
-   */
-  encode(obj: unknown): string {
-    try {
-      const seen = new WeakSet<object>()
-      const processed = this._processValue(obj, seen, 0)
-      const result = JSON.stringify(processed)
-      return result ?? 'undefined'
-    } catch (error) {
-      logger.warn(`error=<${error}> | failed to encode value, returning empty object`)
-      return '{}'
-    }
-  }
-
-  /**
-   * Process any value, handling containers recursively.
-   */
-  private _processValue(value: unknown, seen: WeakSet<object>, depth: number): unknown {
-    // Limit recursion depth to prevent memory issues
-    if (depth > MAX_JSON_ENCODE_DEPTH) {
-      return '<max depth reached>'
-    }
-
-    if (value === null) return null
-    if (value === undefined) return undefined
-
-    if (value instanceof Date) return value.toISOString()
-
-    if (value instanceof Error) {
-      return { name: value.name, message: value.message, stack: value.stack }
-    }
-
-    if (value instanceof Map) {
-      if (seen.has(value)) return '<replaced>'
-      seen.add(value)
-      return {
-        __type__: 'Map',
-        value: Array.from(value.entries()).map(([k, v]) => [
-          this._processValue(k, seen, depth + 1),
-          this._processValue(v, seen, depth + 1),
-        ]),
-      }
-    }
-
-    if (value instanceof Set) {
-      if (seen.has(value)) return '<replaced>'
-      seen.add(value)
-      return {
-        __type__: 'Set',
-        value: Array.from(value).map((item) => this._processValue(item, seen, depth + 1)),
-      }
-    }
-
-    if (value instanceof RegExp) {
-      return { __type__: 'RegExp', source: value.source, flags: value.flags }
-    }
-
-    if (typeof value === 'bigint') {
-      return { __type__: 'BigInt', value: value.toString() }
-    }
-
-    if (typeof value === 'symbol') {
-      return { __type__: 'Symbol', value: value.toString() }
-    }
-
-    if (typeof value === 'function') {
-      return { __type__: 'Function', name: (value as unknown as Record<string, unknown>).name ?? 'anonymous' }
-    }
-
-    if (typeof value === 'object' && !Array.isArray(value)) {
-      if (seen.has(value as object)) return '<replaced>'
-      seen.add(value as object)
-
-      const obj = value as Record<string, unknown>
-
-      if (typeof obj.toJSON === 'function') {
-        try {
-          return this._processValue(obj.toJSON(), seen, depth + 1)
-        } catch {
-          // Fall through to default object handling
-        }
-      }
-
-      if (typeof obj.toString === 'function' && obj.toString !== Object.prototype.toString) {
-        try {
-          return obj.toString()
-        } catch {
-          // Fall through to default object handling
-        }
-      }
-
-      const processed: Record<string, unknown> = {}
-      for (const [key, val] of Object.entries(obj)) {
-        processed[key] = this._processValue(val, seen, depth + 1)
-      }
-      return processed
-    }
-
-    if (Array.isArray(value)) {
-      if (seen.has(value)) return '<replaced>'
-      seen.add(value)
-      return value.map((item) => this._processValue(item, seen, depth + 1))
-    }
-
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-      return value
-    }
-
-    try {
-      JSON.stringify(value)
-      return value
-    } catch {
-      return '<replaced>'
-    }
-  }
-}
-
-// Global encoder instance
-const _encoder = new JSONEncoder()
-
-// Global context stack shared across all Tracer instances
-// This ensures proper parent-child relationships when spans are created
-// from different Tracer instances across async generator boundaries.
-// OpenTelemetry's async local storage doesn't persist across yields,
-// so we maintain our own stack.
-let _globalContextStack: import('@opentelemetry/api').Context[] = []
-
-/**
- * Reset the global context stack (for testing only).
- * @internal
- */
-export function _resetContextStack(): void {
-  _globalContextStack = []
-}
-
-
-/**
- * Map content blocks to OTEL parts format (standalone function).
- */
-function _mapContentBlocksToOtelParts(contentBlocks: unknown[]): Record<string, unknown>[] {
   try {
     return contentBlocks.map((block) => {
       if (!block || typeof block !== 'object') {
@@ -270,6 +223,22 @@ function _mapContentBlocksToOtelParts(contentBlocks: unknown[]): Record<string, 
     return []
   }
 }
+
+// Global context stack shared across all Tracer instances
+// This ensures proper parent-child relationships when spans are created
+// from different Tracer instances across async generator boundaries.
+// OpenTelemetry's async local storage doesn't persist across yields,
+// so we maintain our own stack.
+let _globalContextStack: import('@opentelemetry/api').Context[] = []
+
+/**
+ * Reset the global context stack (for testing only).
+ * @internal
+ */
+export function _resetContextStack(): void {
+  _globalContextStack = []
+}
+
 
 /**
  * Tracer manages OpenTelemetry spans for agent operations.
@@ -343,7 +312,7 @@ export class Tracer {
    * Start an agent invocation span as the active span.
    * Child spans will automatically parent to this span.
    */
-  startAgentSpan(options: StartAgentSpanOptions): ActiveSpanHandle {
+  startAgentSpan(options: StartAgentSpanOptions): Span {
     const {
       messages,
       agentName,
@@ -370,7 +339,19 @@ export class Tracer {
       }
 
       if (tools && tools.length > 0) {
-        attributes['gen_ai.agent.tools'] = serialize(tools)
+        // Extract just tool names for cleaner output
+        const toolNames = tools.map((t) => {
+          if (typeof t === 'object' && t !== null) {
+            // Try to get name from various tool structures
+            const tool = t as Record<string, unknown>
+            if (typeof tool.name === 'string') return tool.name
+            if (tool._functionTool && typeof (tool._functionTool as Record<string, unknown>).name === 'string') {
+              return (tool._functionTool as Record<string, unknown>).name
+            }
+          }
+          return 'unknown'
+        })
+        attributes['gen_ai.agent.tools'] = serialize(toolNames)
       }
 
       if (this._includeToolDefinitions && toolsConfig) {
@@ -390,11 +371,11 @@ export class Tracer {
       }
 
       const mergedAttributes = this._mergeAttributes(attributes, customTraceAttributes)
-      const handle = this._createActiveSpan(spanName, mergedAttributes, SpanKind.INTERNAL)
+      const span = this._createActiveSpan(spanName, mergedAttributes, SpanKind.INTERNAL)
 
-      this._addEventMessages(handle.span, messages)
+      this._addEventMessages(span, messages)
 
-      return handle
+      return span
     } catch (error) {
       logger.warn(`error=<${error}> | failed to start agent span`)
       throw error
@@ -405,16 +386,15 @@ export class Tracer {
    * End an agent invocation span.
    */
   endAgentSpan(
-    handle: ActiveSpanHandle | null,
+    span: Span | null,
     response?: unknown,
     error?: Error,
     accumulatedUsage?: Usage,
     stopReason?: string,
   ): void {
-    if (!handle) return
+    if (!span) return
 
     try {
-      const { span } = handle
       const attributes: Record<string, AttributeValue> = {}
 
       if (accumulatedUsage) {
@@ -443,19 +423,9 @@ export class Tracer {
   }
 
   /**
-   * End a span with error status (convenience method).
-   */
-  endSpanWithError(handle: ActiveSpanHandle | null, errorMessage: string, exception?: Error): void {
-    if (!handle) return
-
-    const error = exception || new Error(errorMessage)
-    this._closeSpan(handle.span, {}, error)
-  }
-
-  /**
    * Start a model invocation span as the active span.
    */
-  startModelInvokeSpan(options: StartModelInvokeSpanOptions): ActiveSpanHandle {
+  startModelInvokeSpan(options: StartModelInvokeSpanOptions): Span {
     const { messages, modelId, customTraceAttributes } = options
 
     try {
@@ -466,11 +436,11 @@ export class Tracer {
       }
 
       const mergedAttributes = this._mergeAttributes(attributes, customTraceAttributes)
-      const handle = this._createActiveSpan('chat', mergedAttributes, SpanKind.INTERNAL)
+      const span = this._createActiveSpan('chat', mergedAttributes, SpanKind.INTERNAL)
 
-      this._addEventMessages(handle.span, messages)
+      this._addEventMessages(span, messages)
 
-      return handle
+      return span
     } catch (error) {
       logger.warn(`error=<${error}> | failed to start model invoke span`)
       throw error
@@ -480,14 +450,12 @@ export class Tracer {
   /**
    * End a model invocation span.
    */
-  endModelInvokeSpan(handle: ActiveSpanHandle | null, options: EndModelSpanOptions = {}): void {
-    if (!handle) return
+  endModelInvokeSpan(span: Span | null, options: EndModelSpanOptions = {}): void {
+    if (!span) return
 
     const { usage, metrics, error, output, stopReason } = options
 
     try {
-      const { span } = handle
-
       if (output !== undefined && output && typeof output === 'object' && 'content' in output && 'role' in output) {
         this._addOutputEvent(span, output as Record<string, unknown>, stopReason)
       }
@@ -515,7 +483,7 @@ export class Tracer {
   /**
    * Start a tool call span as the active span.
    */
-  startToolCallSpan(options: StartToolCallSpanOptions): ActiveSpanHandle {
+  startToolCallSpan(options: StartToolCallSpanOptions): Span {
     const { tool, customTraceAttributes } = options
 
     try {
@@ -524,10 +492,10 @@ export class Tracer {
       attributes['gen_ai.tool.call.id'] = tool.toolUseId
 
       const mergedAttributes = this._mergeAttributes(attributes, customTraceAttributes)
-      const handle = this._createActiveSpan(`execute_tool ${tool.name}`, mergedAttributes, SpanKind.INTERNAL)
+      const span = this._createActiveSpan(`execute_tool ${tool.name}`, mergedAttributes, SpanKind.INTERNAL)
 
       if (this._useLatestConventions) {
-        this._addEvent(handle.span, 'gen_ai.client.inference.operation.details', {
+        this._addEvent(span, 'gen_ai.client.inference.operation.details', {
           'gen_ai.input.messages': serialize([
             {
               role: 'tool',
@@ -536,14 +504,14 @@ export class Tracer {
           ]),
         })
       } else {
-        this._addEvent(handle.span, 'gen_ai.tool.message', {
+        this._addEvent(span, 'gen_ai.tool.message', {
           role: 'tool',
           content: serialize(tool.input),
           id: tool.toolUseId,
         })
       }
 
-      return handle
+      return span
     } catch (error) {
       logger.warn(`error=<${error}> | failed to start tool call span`)
       throw error
@@ -553,11 +521,10 @@ export class Tracer {
   /**
    * End a tool call span.
    */
-  endToolCallSpan(handle: ActiveSpanHandle | null, toolResult?: ToolResult, error?: Error): void {
-    if (!handle) return
+  endToolCallSpan(span: Span | null, toolResult?: ToolResult, error?: Error): void {
+    if (!span) return
 
     try {
-      const { span } = handle
       const attributes: Record<string, AttributeValue> = {}
 
       if (toolResult) {
@@ -590,17 +557,17 @@ export class Tracer {
   /**
    * Start an event loop cycle span as the active span.
    */
-  startEventLoopCycleSpan(options: StartEventLoopCycleSpanOptions): ActiveSpanHandle {
+  startEventLoopCycleSpan(options: StartEventLoopCycleSpanOptions): Span {
     const { cycleId, messages, customTraceAttributes } = options
 
     try {
       const attributes: Record<string, AttributeValue> = { 'event_loop.cycle_id': cycleId }
       const mergedAttributes = this._mergeAttributes(attributes, customTraceAttributes)
-      const handle = this._createActiveSpan('execute_event_loop_cycle', mergedAttributes)
+      const span = this._createActiveSpan('execute_event_loop_cycle', mergedAttributes)
 
-      this._addEventMessages(handle.span, messages)
+      this._addEventMessages(span, messages)
 
-      return handle
+      return span
     } catch (error) {
       logger.warn(`error=<${error}> | failed to start event loop cycle span`)
       throw error
@@ -610,9 +577,9 @@ export class Tracer {
   /**
    * End an event loop cycle span.
    */
-  endEventLoopCycleSpan(handle: ActiveSpanHandle, error?: Error): void {
+  endEventLoopCycleSpan(span: Span, error?: Error): void {
     try {
-      this._closeSpan(handle.span, {}, error)
+      this._closeSpan(span, {}, error)
     } catch (err) {
       logger.warn(`error=<${err}> | failed to end event loop cycle span`)
     }
@@ -630,7 +597,7 @@ export class Tracer {
     spanName: string,
     attributes?: Record<string, AttributeValue>,
     spanKind?: SpanKind,
-  ): ActiveSpanHandle {
+  ): Span {
     const options: SpanOptions = {}
 
     if (attributes) {
@@ -661,7 +628,7 @@ export class Tracer {
     const spanContext = trace.setSpan(parentContext, span)
     this._pushContext(spanContext)
 
-    return { span }
+    return span
   }
 
   /**
@@ -759,7 +726,7 @@ export class Tracer {
         for (const message of messages) {
           inputMessages.push({
             role: message.role,
-            parts: _mapContentBlocksToOtelParts(message.content),
+            parts: mapContentBlocksToOtelParts(message.content),
           })
         }
         this._addEvent(span, 'gen_ai.client.inference.operation.details', {
@@ -877,7 +844,7 @@ export class Tracer {
         'gen_ai.output.messages': serialize([
           {
             role: msgObj.role,
-            parts: _mapContentBlocksToOtelParts(msgObj.content as unknown[]),
+            parts: mapContentBlocksToOtelParts(msgObj.content as unknown[]),
             finish_reason: stopReason || 'unknown',
           },
         ]),

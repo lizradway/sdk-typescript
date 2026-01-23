@@ -721,23 +721,6 @@ describe('Tracer', () => {
         }
       }).not.toThrow()
     })
-
-    it('should handle endSpanWithError without throwing', () => {
-      const messages: Message[] = [
-        new Message({
-          role: 'user',
-          content: [new TextBlock('Test')],
-        }),
-      ]
-
-      const span = tracer.startAgentSpan({ messages, agentName: 'test-agent' })
-
-      expect(() => {
-        if (span) {
-          tracer.endSpanWithError(span, 'Test error message', new Error('underlying error'))
-        }
-      }).not.toThrow()
-    })
   })
 
   describe('Property 2: Attribute Consistency (Model Invocation)', () => {
@@ -2392,11 +2375,11 @@ describe('Additional Tracer Coverage', () => {
 
     it('should return a tracer when telemetry is enabled', async () => {
       const { getTracer } = await import('../tracer.js')
-      const { StrandsTelemetry, _resetTracerProvider } = await import('../config.js')
+      const { strandsTelemetry, _resetTracerProvider } = await import('../config.js')
       
       // Enable telemetry
       _resetTracerProvider()
-      new StrandsTelemetry()
+      strandsTelemetry.setupConsoleExporter()
       
       const tracer1 = getTracer()
       expect(tracer1).toBeDefined()
