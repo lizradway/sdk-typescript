@@ -60,3 +60,15 @@ export interface ToolUse {
  * - `{ tool: { name: 'name' } }` - Force the model to use a specific tool
  */
 export type ToolChoice = { auto: Record<string, never> } | { any: Record<string, never> } | { tool: { name: string } }
+
+/**
+ * Result of a tool execution.
+ */
+export interface ToolResult {
+  /** Unique identifier matching the tool use request. */
+  toolUseId: string
+  /** Whether the tool executed successfully or encountered an error. */
+  status: ToolResultStatus
+  /** The output content from the tool. */
+  content: unknown
+}

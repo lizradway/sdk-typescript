@@ -44,7 +44,7 @@ import {
 } from '../hooks/events.js'
 import { Tracer } from '../telemetry/tracer.js'
 import { isTelemetryEnabled } from '../telemetry/config.js'
-import type { Usage } from '../telemetry/types.js'
+import type { Usage } from '../models/streaming.js'
 import type { AttributeValue } from '@opentelemetry/api'
 import { createEmptyUsage, accumulateUsage, getModelId } from '../telemetry/utils.js'
 import { validateIdentifier, IdentifierType } from '../identifier.js'
@@ -338,7 +338,7 @@ export class Agent implements AgentData {
     }
 
     const span = this._traceSpan
-    this._traceSpan = undefined // Clear first to ensure idempotency
+    this._traceSpan = undefined // Prevent double-ending if called again
 
     this._tracer.endAgentSpan(span, response, error, this._accumulatedTokenUsage, stopReason)
   }
@@ -666,36 +666,46 @@ export class Agent implements AgentData {
     
     const modelSpan = this._tracer?.startModelInvokeSpan({ messages, modelId })
     
-    const streamGenerator = this.model.streamAggregated(messages, streamOptions)
-    let result = await streamGenerator.next()
+    try {
+      const streamGenerator = this.model.streamAggregated(messages, streamOptions)
+      let result = await streamGenerator.next()
 
-    while (!result.done) {
-      const event = result.value
+      while (!result.done) {
+        const event = result.value
 
-      // Yield hook event for observability
-      yield new ModelStreamEventHook({ agent: this, event })
+        // Yield hook event for observability
+        yield new ModelStreamEventHook({ agent: this, event })
 
-      // Yield the actual model event
-      yield event
-      result = await streamGenerator.next()
+        // Yield the actual model event
+        yield event
+        result = await streamGenerator.next()
+      }
+
+      // Accumulate token usage from metadata if available
+      if (result.value.metadata?.usage) {
+        const usage = result.value.metadata.usage
+        accumulateUsage(this._accumulatedTokenUsage, usage)
+      }
+
+      // End model span on success
+      if (modelSpan && this._tracer) {
+        this._tracer.endModelInvokeSpan(modelSpan, {
+          output: result.value.message,
+          stopReason: result.value.stopReason,
+        })
+      }
+
+      // result.done is true, result.value contains the return value
+      return result.value
+    } catch (error) {
+      // End model span on error to prevent span leaks
+      if (modelSpan && this._tracer) {
+        this._tracer.endModelInvokeSpan(modelSpan, {
+          error: normalizeError(error),
+        })
+      }
+      throw error
     }
-
-    // Accumulate token usage from metadata if available
-    if (result.value.metadata?.usage) {
-      const usage = result.value.metadata.usage
-      accumulateUsage(this._accumulatedTokenUsage, usage)
-    }
-
-    // End model span if telemetry is enabled
-    if (modelSpan && this._tracer) {
-      this._tracer.endModelInvokeSpan(modelSpan, {
-        output: result.value.message,
-        stopReason: result.value.stopReason,
-      })
-    }
-
-    // result.done is true, result.value contains the return value
-    return result.value
   }
 
   /**

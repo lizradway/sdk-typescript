@@ -17,6 +17,22 @@ import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { logger } from '../logging/index.js'
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** OTLP traces endpoint path suffix */
+const OTLP_TRACES_PATH = '/v1/traces'
+
+/** Default service name when OTEL_SERVICE_NAME is not set */
+const DEFAULT_SERVICE_NAME = 'strands-agents'
+
+/** Default service namespace when OTEL_SERVICE_NAMESPACE is not set */
+const DEFAULT_SERVICE_NAMESPACE = 'strands'
+
+/** Default deployment environment when OTEL_DEPLOYMENT_ENVIRONMENT is not set */
+const DEFAULT_DEPLOYMENT_ENVIRONMENT = 'development'
+
+// ---------------------------------------------------------------------------
 // Module-level state
 // ---------------------------------------------------------------------------
 
@@ -79,9 +95,9 @@ export interface StrandsTelemetry {
  * Reads from standard OTEL environment variables with sensible defaults.
  */
 function getOtelResource(): Resource {
-  const serviceName = process.env.OTEL_SERVICE_NAME || 'strands-agents'
-  const serviceNamespace = process.env.OTEL_SERVICE_NAMESPACE || 'strands'
-  const deploymentEnvironment = process.env.OTEL_DEPLOYMENT_ENVIRONMENT || 'development'
+  const serviceName = process.env.OTEL_SERVICE_NAME || DEFAULT_SERVICE_NAME
+  const serviceNamespace = process.env.OTEL_SERVICE_NAMESPACE || DEFAULT_SERVICE_NAMESPACE
+  const deploymentEnvironment = process.env.OTEL_DEPLOYMENT_ENVIRONMENT || DEFAULT_DEPLOYMENT_ENVIRONMENT
   
   return new Resource({
     'service.name': serviceName,
@@ -253,7 +269,7 @@ export const strandsTelemetry: StrandsTelemetry = {
 
     try {
       const headers = options.headers ?? parseOtlpHeadersFromEnv()
-      const tracesUrl = buildOtlpUrl(otlpEndpoint, '/v1/traces')
+      const tracesUrl = buildOtlpUrl(otlpEndpoint, OTLP_TRACES_PATH)
       
       const exporter = new OTLPTraceExporter({ url: tracesUrl, headers })
       const batchProcessor = new BatchSpanProcessor(exporter)

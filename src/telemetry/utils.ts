@@ -3,7 +3,7 @@
  */
 
 import type { Model } from '../models/model.js'
-import type { Usage } from './types.js'
+import type { Usage } from '../models/streaming.js'
 
 /**
  * Creates an empty usage object with all counters set to zero.

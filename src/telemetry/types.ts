@@ -3,6 +3,12 @@
  */
 
 import type { AttributeValue } from '@opentelemetry/api'
+import type { Message } from '../types/messages.js'
+import type { Usage, Metrics } from '../models/streaming.js'
+import type { ToolUse, ToolResult } from '../tools/types.js'
+
+// Re-export for convenience
+export type { Usage, Metrics, ToolUse, ToolResult }
 
 /**
  * Telemetry configuration options for the Tracer.
@@ -15,45 +21,52 @@ export interface TelemetryConfig {
 }
 
 /**
- * Token usage statistics for a model invocation.
+ * Options for ending a model invocation span.
  */
-export interface Usage {
-  /** Number of tokens in the input (prompt). */
-  inputTokens: number
-  /** Number of tokens in the output (completion). */
-  outputTokens: number
-  /** Total number of tokens (input + output). */
-  totalTokens: number
-  /** Number of input tokens read from cache. */
-  cacheReadInputTokens?: number
-  /** Number of input tokens written to cache. */
-  cacheWriteInputTokens?: number
+export interface EndModelSpanOptions {
+  usage?: Usage | undefined
+  metrics?: Metrics | undefined
+  error?: Error | undefined
+  output?: unknown
+  stopReason?: string | undefined
 }
 
 /**
- * Performance metrics for a model invocation.
+ * Options for starting an agent span.
  */
-export interface Metrics {
-  /** Time to first byte/token in milliseconds. */
-  timeToFirstByteMs?: number
-  /** Total latency in milliseconds. */
-  latencyMs?: number
+export interface StartAgentSpanOptions {
+  messages: Message[]
+  agentName: string
+  agentId?: string
+  modelId?: string
+  tools?: unknown[]
+  customTraceAttributes?: Record<string, AttributeValue>
+  toolsConfig?: Record<string, unknown>
+  systemPrompt?: unknown
 }
 
 /**
- * Tool use information for tracing.
+ * Options for starting a model invocation span.
  */
-export interface ToolUse {
-  name: string
-  toolUseId: string
-  input: unknown
+export interface StartModelInvokeSpanOptions {
+  messages: Message[]
+  modelId?: string
+  customTraceAttributes?: Record<string, AttributeValue>
 }
 
 /**
- * Tool result information for tracing.
+ * Options for starting a tool call span.
  */
-export interface ToolResult {
-  toolUseId: string
-  status: 'success' | 'error'
-  content: unknown
+export interface StartToolCallSpanOptions {
+  tool: ToolUse
+  customTraceAttributes?: Record<string, AttributeValue>
+}
+
+/**
+ * Options for starting an event loop cycle span.
+ */
+export interface StartEventLoopCycleSpanOptions {
+  cycleId: string
+  messages: Message[]
+  customTraceAttributes?: Record<string, AttributeValue>
 }

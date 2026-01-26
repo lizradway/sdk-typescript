@@ -1,9 +1,31 @@
 import type { Role, StopReason } from '../types/messages.js'
 import type { JSONValue } from '../types/json.js'
-import type { Usage, Metrics } from '../telemetry/types.js'
 
-// Re-export for backward compatibility
-export type { Usage, Metrics }
+/**
+ * Token usage statistics for a model invocation.
+ */
+export interface Usage {
+  /** Number of tokens in the input (prompt). */
+  inputTokens: number
+  /** Number of tokens in the output (completion). */
+  outputTokens: number
+  /** Total number of tokens (input + output). */
+  totalTokens: number
+  /** Number of input tokens read from cache. */
+  cacheReadInputTokens?: number
+  /** Number of input tokens written to cache. */
+  cacheWriteInputTokens?: number
+}
+
+/**
+ * Performance metrics for a model invocation.
+ */
+export interface Metrics {
+  /** Time to first byte/token in milliseconds. */
+  timeToFirstByteMs?: number
+  /** Total latency in milliseconds. */
+  latencyMs?: number
+}
 
 /**
  * ModelStreamEvent types for Model interactions.

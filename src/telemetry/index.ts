@@ -2,4 +2,4 @@
  * OpenTelemetry telemetry support for Strands Agents SDK.
  */
 
-export { strandsTelemetry, isTelemetryEnabled, getGlobalTelemetry } from './config.js'
+export { strandsTelemetry } from './config.js'
