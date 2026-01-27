@@ -77,7 +77,7 @@ describe('Agent Telemetry Integration', () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        customTraceAttributes: customAttributes,
+        traceAttributes: customAttributes,
       })
 
       // Verify agent was created successfully
@@ -137,7 +137,7 @@ describe('Agent Telemetry Integration', () => {
       const agent = new Agent({
         model: bedrock.createModel(),
         printer: false,
-        customTraceAttributes: {
+        traceAttributes: {
           'app.version': '1.0.0',
           'app.environment': 'test',
         },

@@ -15,9 +15,9 @@ export type { Usage, Metrics, ToolUse, ToolResult }
  */
 export interface TelemetryConfig {
   /**
-   * Custom trace attributes to include in all spans.
+   * Trace attributes to include in all spans.
    */
-  customTraceAttributes?: Record<string, AttributeValue> | undefined
+  traceAttributes?: Record<string, AttributeValue> | undefined
 }
 
 /**
@@ -40,7 +40,7 @@ export interface StartAgentSpanOptions {
   agentId?: string
   modelId?: string
   tools?: unknown[]
-  customTraceAttributes?: Record<string, AttributeValue>
+  traceAttributes?: Record<string, AttributeValue>
   toolsConfig?: Record<string, unknown>
   systemPrompt?: unknown
 }
@@ -51,7 +51,7 @@ export interface StartAgentSpanOptions {
 export interface StartModelInvokeSpanOptions {
   messages: Message[]
   modelId?: string
-  customTraceAttributes?: Record<string, AttributeValue>
+  traceAttributes?: Record<string, AttributeValue>
 }
 
 /**
@@ -59,7 +59,7 @@ export interface StartModelInvokeSpanOptions {
  */
 export interface StartToolCallSpanOptions {
   tool: ToolUse
-  customTraceAttributes?: Record<string, AttributeValue>
+  traceAttributes?: Record<string, AttributeValue>
 }
 
 /**
@@ -68,5 +68,5 @@ export interface StartToolCallSpanOptions {
 export interface StartEventLoopCycleSpanOptions {
   cycleId: string
   messages: Message[]
-  customTraceAttributes?: Record<string, AttributeValue>
+  traceAttributes?: Record<string, AttributeValue>
 }

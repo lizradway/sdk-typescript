@@ -3,6 +3,10 @@
  *
  * This module provides centralized configuration and initialization functionality
  * for OpenTelemetry components and other telemetry infrastructure shared across Strands applications.
+ *
+ * Note: This module uses NodeTracerProvider and AsyncHooksContextManager, which are
+ * Node.js-specific. It works with Node.js and Bun runtimes but is not compatible
+ * with browser environments.
  */
 
 import { context as apiContext, propagation } from '@opentelemetry/api'
@@ -10,44 +14,10 @@ import { AsyncHooksContextManager } from '@opentelemetry/context-async-hooks'
 import { Resource } from '@opentelemetry/resources'
 import { NodeTracerProvider, ConsoleSpanExporter } from '@opentelemetry/sdk-trace-node'
 import { SimpleSpanProcessor, BatchSpanProcessor } from '@opentelemetry/sdk-trace-base'
-import { CompositePropagator } from '@opentelemetry/core'
-import { W3CTraceContextPropagator } from '@opentelemetry/core'
-import { W3CBaggagePropagator } from '@opentelemetry/core'
+import type { SpanProcessor } from '@opentelemetry/sdk-trace-base'
+import { CompositePropagator, W3CTraceContextPropagator, W3CBaggagePropagator } from '@opentelemetry/core'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { logger } from '../logging/index.js'
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** OTLP traces endpoint path suffix */
-const OTLP_TRACES_PATH = '/v1/traces'
-
-/** Default service name when OTEL_SERVICE_NAME is not set */
-const DEFAULT_SERVICE_NAME = 'strands-agents'
-
-/** Default service namespace when OTEL_SERVICE_NAMESPACE is not set */
-const DEFAULT_SERVICE_NAMESPACE = 'strands'
-
-/** Default deployment environment when OTEL_DEPLOYMENT_ENVIRONMENT is not set */
-const DEFAULT_DEPLOYMENT_ENVIRONMENT = 'development'
-
-// ---------------------------------------------------------------------------
-// Module-level state
-// ---------------------------------------------------------------------------
-
-/** Global tracer provider instance */
-let _tracerProvider: NodeTracerProvider | null = null
-
-/** Flag indicating telemetry has been initialized */
-let _telemetryInitialized = false
-
-/** Flag indicating provider has been registered */
-let _providerRegistered = false
-
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
 
 /**
  * Options for configuring the OTLP exporter.
@@ -55,6 +25,7 @@ let _providerRegistered = false
 export interface OtlpExporterOptions {
   /**
    * OTLP endpoint URL. Falls back to OTEL_EXPORTER_OTLP_ENDPOINT env var.
+   * Must be a valid HTTP/HTTPS URL (e.g., 'http://localhost:4318').
    */
   endpoint?: string
   /**
@@ -66,6 +37,13 @@ export interface OtlpExporterOptions {
 
 /**
  * Interface for the StrandsTelemetry singleton object.
+ *
+ * If no exporter is configured, the tracer provider is still initialized but
+ * spans will not be exported anywhere. This is useful for testing or when
+ * tracing is disabled.
+ *
+ * Setup methods are safe to call multiple times - each call adds an additional
+ * exporter. The tracer provider is initialized lazily on first setup call.
  */
 export interface StrandsTelemetry {
   /**
@@ -79,153 +57,6 @@ export interface StrandsTelemetry {
    * @returns This object for method chaining
    */
   setupConsoleExporter(): StrandsTelemetry
-  /**
-   * Flush all pending spans and shut down the tracer provider.
-   * Call this before your application exits to ensure all traces are exported.
-   */
-  shutdown(): Promise<void>
-}
-
-// ---------------------------------------------------------------------------
-// Internal helper functions
-// ---------------------------------------------------------------------------
-
-/**
- * Get or create the OpenTelemetry resource with service information.
- * Reads from standard OTEL environment variables with sensible defaults.
- */
-function getOtelResource(): Resource {
-  const serviceName = process.env.OTEL_SERVICE_NAME || DEFAULT_SERVICE_NAME
-  const serviceNamespace = process.env.OTEL_SERVICE_NAMESPACE || DEFAULT_SERVICE_NAMESPACE
-  const deploymentEnvironment = process.env.OTEL_DEPLOYMENT_ENVIRONMENT || DEFAULT_DEPLOYMENT_ENVIRONMENT
-  
-  return new Resource({
-    'service.name': serviceName,
-    'service.namespace': serviceNamespace,
-    'deployment.environment': deploymentEnvironment,
-    'telemetry.sdk.name': 'opentelemetry',
-    'telemetry.sdk.language': 'typescript',
-  })
-}
-
-/**
- * Parse OTLP headers from environment variable.
- * Handles format: "key1=value1,key2=value2" with support for values containing '='.
- */
-function parseOtlpHeadersFromEnv(): Record<string, string> {
-  const headers: Record<string, string> = {}
-  const headersEnv = process.env.OTEL_EXPORTER_OTLP_HEADERS
-  
-  if (!headersEnv) {
-    return headers
-  }
-
-  const headerPairs = headersEnv.split(',')
-  for (const pair of headerPairs) {
-    const eqIndex = pair.indexOf('=')
-    if (eqIndex > 0) {
-      const key = pair.substring(0, eqIndex).trim()
-      const value = pair.substring(eqIndex + 1).trim()
-      if (key && value) {
-        headers[key] = value
-      }
-    }
-  }
-  
-  return headers
-}
-
-/**
- * Build an OTLP URL by appending the path suffix if not already present.
- */
-function buildOtlpUrl(endpoint: string, pathSuffix: string): string {
-  const baseUrl = endpoint.replace(/\/$/, '')
-  if (baseUrl.endsWith(pathSuffix)) {
-    return baseUrl
-  }
-  return baseUrl + pathSuffix
-}
-
-/**
- * Get the global StrandsTelemetry singleton.
- * Agents use this to check if telemetry has been configured.
- *
- * @returns The strandsTelemetry singleton, or null if not initialized
- */
-export function getGlobalTelemetry(): StrandsTelemetry | null {
-  return _telemetryInitialized ? strandsTelemetry : null
-}
-
-/**
- * Check if global telemetry is enabled.
- * Returns true if any strandsTelemetry setup method has been called.
- *
- * @returns True if telemetry is enabled globally
- */
-export function isTelemetryEnabled(): boolean {
-  return _telemetryInitialized
-}
-
-// ---------------------------------------------------------------------------
-// Internal functions (exported for use by other telemetry modules)
-// ---------------------------------------------------------------------------
-
-/**
- * Initialize the global tracer provider with OTLP exporter if configured.
- * This is called once on first use and sets up the global tracer provider.
- * Subsequent calls return the same instance (idempotent).
- *
- * @internal
- */
-export function initializeTracerProvider(): NodeTracerProvider {
-  if (_tracerProvider) {
-    return _tracerProvider
-  }
-
-  // Register AsyncHooksContextManager for context propagation across async boundaries
-  const contextManager = new AsyncHooksContextManager()
-  contextManager.enable()
-  apiContext.setGlobalContextManager(contextManager)
-  
-  const resource = getOtelResource()
-  _tracerProvider = new NodeTracerProvider({ resource })
-
-  // Set up propagators for distributed tracing
-  const propagator = new CompositePropagator({
-    propagators: [new W3CBaggagePropagator(), new W3CTraceContextPropagator()],
-  })
-  propagation.setGlobalPropagator(propagator)
-
-  // Note: register() is called after span processors are added in setupOtlpExporter/setupConsoleExporter
-
-  return _tracerProvider
-}
-
-// ---------------------------------------------------------------------------
-// Test utilities
-// ---------------------------------------------------------------------------
-
-/**
- * Reset tracer provider and global telemetry.
- * @internal - For testing only
- */
-export function _resetTracerProvider(): void {
-  _tracerProvider = null
-  _telemetryInitialized = false
-  _providerRegistered = false
-}
-
-// ---------------------------------------------------------------------------
-// StrandsTelemetry singleton
-// ---------------------------------------------------------------------------
-
-/**
- * Initialize the singleton telemetry instance.
- * Called automatically on first method call.
- */
-function initializeSingleton(): NodeTracerProvider {
-  _telemetryInitialized = true
-  return initializeTracerProvider()
 }
 
 /**
@@ -242,7 +73,7 @@ function initializeSingleton(): NodeTracerProvider {
  * ```typescript
  * import { Agent, strandsTelemetry } from '@strands-agents/sdk'
  *
- * // Initialize telemetry - registers global hook provider
+ * // Initialize telemetry - registers global tracer provider
  * strandsTelemetry
  *   .setupOtlpExporter()     // Optional: Export traces to OTLP endpoint
  *   .setupConsoleExporter()  // Optional: Log spans to console
@@ -251,7 +82,7 @@ function initializeSingleton(): NodeTracerProvider {
  * const agent = new Agent({
  *   model,
  *   tools: [weather_tool],
- *   customTraceAttributes: {
+ *   traceAttributes: {
  *     'session.id': 'abc-1234',
  *     'user.id': 'user@example.com',
  *   },
@@ -260,33 +91,17 @@ function initializeSingleton(): NodeTracerProvider {
  */
 export const strandsTelemetry: StrandsTelemetry = {
   setupOtlpExporter(options: OtlpExporterOptions = {}): StrandsTelemetry {
-    const tracerProvider = initializeSingleton()
-    const otlpEndpoint = options.endpoint ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT
-    if (!otlpEndpoint) {
-      logger.warn('otlp_endpoint=<not set> | skipping otlp exporter configuration')
-      return this
-    }
+    const tracerProvider = initializeTracerProvider()
 
     try {
-      const headers = options.headers ?? parseOtlpHeadersFromEnv()
-      const tracesUrl = buildOtlpUrl(otlpEndpoint, OTLP_TRACES_PATH)
-      
-      const exporter = new OTLPTraceExporter({ url: tracesUrl, headers })
+      // Only pass explicit options if provided - OTEL SDK handles env vars automatically
+      const exporterConfig: { url?: string; headers?: Record<string, string> } = {}
+      if (options.endpoint) exporterConfig.url = options.endpoint
+      if (options.headers) exporterConfig.headers = options.headers
+
+      const exporter = new OTLPTraceExporter(exporterConfig)
       const batchProcessor = new BatchSpanProcessor(exporter)
-      tracerProvider.addSpanProcessor(batchProcessor)
-      
-      // Register provider after adding processors (only once)
-      if (!_providerRegistered) {
-        tracerProvider.register()
-        _providerRegistered = true
-        
-        // Auto-flush on process exit for short-lived scripts
-        process.on('beforeExit', () => {
-          if (_tracerProvider) {
-            _tracerProvider.forceFlush()
-          }
-        })
-      }
+      registerProviderWithProcessor(tracerProvider, batchProcessor)
     } catch (error) {
       logger.warn(`error=<${error}> | failed to configure otlp exporter`)
     }
@@ -294,20 +109,84 @@ export const strandsTelemetry: StrandsTelemetry = {
   },
 
   setupConsoleExporter(): StrandsTelemetry {
-    const tracerProvider = initializeSingleton()
+    const tracerProvider = initializeTracerProvider()
     try {
       const consoleExporter = new ConsoleSpanExporter()
-      tracerProvider.addSpanProcessor(new SimpleSpanProcessor(consoleExporter))
+      const simpleProcessor = new SimpleSpanProcessor(consoleExporter)
+      registerProviderWithProcessor(tracerProvider, simpleProcessor)
     } catch (error) {
       logger.warn(`error=<${error}> | failed to configure console exporter`)
     }
     return this
   },
-
-  async shutdown(): Promise<void> {
-    if (_tracerProvider) {
-      await _tracerProvider.forceFlush()
-      await _tracerProvider.shutdown()
-    }
-  },
 }
+
+/**
+ * Initialize the tracer provider. Safe to call multiple times - returns the existing
+ * provider if already initialized. Sets up AsyncHooksContextManager for context
+ * propagation across async boundaries and configures W3C trace context propagators
+ * for distributed tracing.
+ */
+function initializeTracerProvider(): NodeTracerProvider {
+  if (_tracerProvider) {
+    return _tracerProvider
+  }
+
+  const contextManager = new AsyncHooksContextManager()
+  contextManager.enable()
+  apiContext.setGlobalContextManager(contextManager)
+
+  const resource = getOtelResource()
+  _tracerProvider = new NodeTracerProvider({ resource })
+
+  const propagator = new CompositePropagator({
+    propagators: [new W3CBaggagePropagator(), new W3CTraceContextPropagator()],
+  })
+  propagation.setGlobalPropagator(propagator)
+
+  return _tracerProvider
+}
+
+/**
+ * Register a span processor and ensure the provider is registered globally.
+ * On first registration, also sets up a beforeExit handler to auto-flush
+ * pending spans - important for short-lived scripts that exit before
+ * the BatchSpanProcessor's scheduled export.
+ */
+function registerProviderWithProcessor(tracerProvider: NodeTracerProvider, processor: SpanProcessor): void {
+  tracerProvider.addSpanProcessor(processor)
+
+  if (!_providerRegistered) {
+    tracerProvider.register()
+    _providerRegistered = true
+
+    process.on('beforeExit', () => {
+      if (_tracerProvider) {
+        _tracerProvider.forceFlush().catch((err) => {
+          logger.warn(`error=<${err}> | failed to flush tracer provider on exit`)
+        })
+      }
+    })
+  }
+}
+
+function getOtelResource(): Resource {
+  const serviceName = process.env.OTEL_SERVICE_NAME || DEFAULT_SERVICE_NAME
+  const serviceNamespace = process.env.OTEL_SERVICE_NAMESPACE || DEFAULT_SERVICE_NAMESPACE
+  const deploymentEnvironment = process.env.OTEL_DEPLOYMENT_ENVIRONMENT || DEFAULT_DEPLOYMENT_ENVIRONMENT
+
+  return new Resource({
+    'service.name': serviceName,
+    'service.namespace': serviceNamespace,
+    'deployment.environment': deploymentEnvironment,
+    'telemetry.sdk.name': 'opentelemetry',
+    'telemetry.sdk.language': 'typescript',
+  })
+}
+
+const DEFAULT_SERVICE_NAME = 'strands-agents'
+const DEFAULT_SERVICE_NAMESPACE = 'strands'
+const DEFAULT_DEPLOYMENT_ENVIRONMENT = 'development'
+
+let _tracerProvider: NodeTracerProvider | null = null
+let _providerRegistered = false

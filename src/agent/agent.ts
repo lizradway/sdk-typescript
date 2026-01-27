@@ -42,8 +42,7 @@ import {
   MessageAddedEvent,
   ModelStreamEventHook,
 } from '../hooks/events.js'
-import { Tracer } from '../telemetry/tracer.js'
-import { isTelemetryEnabled } from '../telemetry/config.js'
+import { getTracer, Tracer } from '../telemetry/tracer.js'
 import type { Usage } from '../models/streaming.js'
 import type { AttributeValue } from '@opentelemetry/api'
 import { createEmptyUsage, accumulateUsage, getModelId } from '../telemetry/utils.js'
@@ -120,19 +119,19 @@ export type AgentConfig = {
    * @example
    * ```typescript
    * // First, initialize global telemetry
-   * new StrandsTelemetry().setupOtlpExporter()
+   * strandsTelemetry.setupOtlpExporter()
    *
-   * // Then create agent with custom attributes
+   * // Then create agent with trace attributes
    * const agent = new Agent({
    *   model,
-   *   customTraceAttributes: {
+   *   traceAttributes: {
    *     'session.id': 'abc-1234',
    *     'user.id': 'user@example.com',
    *   },
    * })
    * ```
    */
-  customTraceAttributes?: Record<string, AttributeValue>
+  traceAttributes?: Record<string, AttributeValue>
   /**
    * Optional name for the agent.
    * Defaults to "Strands Agents" if not provided.
@@ -249,11 +248,8 @@ export class Agent implements AgentData {
       this._printer = new AgentPrinter(getDefaultAppender())
     }
 
-    // Initialize tracer if global telemetry is enabled
-    if (isTelemetryEnabled()) {
-      const tracerConfig = { customTraceAttributes: config?.customTraceAttributes }
-      this._tracer = new Tracer(tracerConfig)
-    }
+    // Initialize tracer - OTEL returns no-op tracer if not configured
+    this._tracer = getTracer({ traceAttributes: config?.traceAttributes })
 
     this._initialized = false
   }

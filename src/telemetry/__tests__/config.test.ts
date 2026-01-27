@@ -1,123 +1,56 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { strandsTelemetry, _resetTracerProvider, isTelemetryEnabled, getGlobalTelemetry } from '../config.js'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { trace } from '@opentelemetry/api'
+
+// Increase max listeners to avoid warning during tests (each module reload adds a beforeExit listener)
+process.setMaxListeners(20)
 
 describe('config', () => {
   const originalEnv = { ...process.env }
 
   beforeEach(() => {
-    // Reset tracer provider before each test
-    _resetTracerProvider()
+    vi.resetModules()
   })
 
   afterEach(() => {
-    // Restore environment variables
     process.env = { ...originalEnv }
-    _resetTracerProvider()
-  })
-
-  describe('isTelemetryEnabled', () => {
-    it('should return false before strandsTelemetry is used', () => {
-      expect(isTelemetryEnabled()).toBe(false)
-    })
-
-    it('should return true after strandsTelemetry setup method is called', () => {
-      strandsTelemetry.setupConsoleExporter()
-
-      expect(isTelemetryEnabled()).toBe(true)
-    })
-  })
-
-  describe('getGlobalTelemetry', () => {
-    it('should return null before strandsTelemetry is used', () => {
-      expect(getGlobalTelemetry()).toBeNull()
-    })
-
-    it('should return the strandsTelemetry singleton after setup', () => {
-      strandsTelemetry.setupConsoleExporter()
-
-      expect(getGlobalTelemetry()).toBe(strandsTelemetry)
-    })
   })
 
   describe('strandsTelemetry', () => {
     describe('setupOtlpExporter', () => {
-      it('should skip setup when OTEL_EXPORTER_OTLP_ENDPOINT is not set and no endpoint provided', () => {
-        delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT
-
-        const result = strandsTelemetry.setupOtlpExporter()
-
-        expect(result).toBe(strandsTelemetry) // Returns this for chaining
-      })
-
-      it('should configure OTLP exporter when endpoint is set via env var', () => {
-        process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://localhost:4318'
+      it('should configure OTLP exporter with default settings', async () => {
+        // OTEL SDK uses http://localhost:4318/v1/traces by default
+        const { strandsTelemetry } = await import('../config.js')
 
         const result = strandsTelemetry.setupOtlpExporter()
 
         expect(result).toBe(strandsTelemetry)
+        expect(trace.getTracerProvider()).toBeDefined()
       })
 
-      it('should configure OTLP exporter when endpoint is passed as option', () => {
-        delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+      it('should configure OTLP exporter when endpoint is passed as option', async () => {
+        const { strandsTelemetry } = await import('../config.js')
 
-        const result = strandsTelemetry.setupOtlpExporter({ endpoint: 'http://localhost:4318' })
+        const result = strandsTelemetry.setupOtlpExporter({ endpoint: 'http://custom:4318/v1/traces' })
 
         expect(result).toBe(strandsTelemetry)
       })
 
-      it('should prefer option over environment variable for endpoint', () => {
-        process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://env-endpoint:4318'
+      it('should use headers from options when provided', async () => {
+        const { strandsTelemetry } = await import('../config.js')
 
-        const result = strandsTelemetry.setupOtlpExporter({ endpoint: 'http://param-endpoint:4318' })
-
-        expect(result).toBe(strandsTelemetry)
-      })
-
-      it('should use headers from options when provided', () => {
         const result = strandsTelemetry.setupOtlpExporter({
-          endpoint: 'http://localhost:4318',
+          endpoint: 'http://localhost:4318/v1/traces',
           headers: { Authorization: 'Bearer token123' },
         })
 
         expect(result).toBe(strandsTelemetry)
       })
 
-      it('should parse headers from environment variable when not provided in options', () => {
+      it('should let OTEL SDK handle env vars when no options provided', async () => {
+        // OTEL SDK automatically reads OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_HEADERS
         process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://localhost:4318'
         process.env.OTEL_EXPORTER_OTLP_HEADERS = 'Authorization=Bearer token123,X-Custom=value'
-
-        const result = strandsTelemetry.setupOtlpExporter()
-
-        expect(result).toBe(strandsTelemetry)
-      })
-
-      it('should handle headers with equals signs in values', () => {
-        process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://localhost:4318'
-        process.env.OTEL_EXPORTER_OTLP_HEADERS = 'Authorization=Basic dXNlcjpwYXNz'
-
-        const result = strandsTelemetry.setupOtlpExporter()
-
-        expect(result).toBe(strandsTelemetry)
-      })
-
-      it('should append /v1/traces to endpoint if not present', () => {
-        process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://localhost:4318'
-
-        const result = strandsTelemetry.setupOtlpExporter()
-
-        expect(result).toBe(strandsTelemetry)
-      })
-
-      it('should not append /v1/traces if already present', () => {
-        process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://localhost:4318/v1/traces'
-
-        const result = strandsTelemetry.setupOtlpExporter()
-
-        expect(result).toBe(strandsTelemetry)
-      })
-
-      it('should handle trailing slash in endpoint', () => {
-        process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://localhost:4318/'
+        const { strandsTelemetry } = await import('../config.js')
 
         const result = strandsTelemetry.setupOtlpExporter()
 
@@ -126,7 +59,17 @@ describe('config', () => {
     })
 
     describe('setupConsoleExporter', () => {
-      it('should configure console exporter', () => {
+      it('should configure console exporter', async () => {
+        const { strandsTelemetry } = await import('../config.js')
+
+        const result = strandsTelemetry.setupConsoleExporter()
+
+        expect(result).toBe(strandsTelemetry)
+      })
+
+      it('should work without setupOtlpExporter being called first', async () => {
+        const { strandsTelemetry } = await import('../config.js')
+
         const result = strandsTelemetry.setupConsoleExporter()
 
         expect(result).toBe(strandsTelemetry)
@@ -134,12 +77,40 @@ describe('config', () => {
     })
 
     describe('method chaining', () => {
-      it('should support chaining multiple setup methods', () => {
+      it('should support chaining multiple setup methods', async () => {
         process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://localhost:4318'
+        const { strandsTelemetry } = await import('../config.js')
 
-        const result = strandsTelemetry
-          .setupOtlpExporter()
-          .setupConsoleExporter()
+        const result = strandsTelemetry.setupOtlpExporter().setupConsoleExporter()
+
+        expect(result).toBe(strandsTelemetry)
+      })
+
+      it('should support console exporter first then OTLP', async () => {
+        process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://localhost:4318'
+        const { strandsTelemetry } = await import('../config.js')
+
+        const result = strandsTelemetry.setupConsoleExporter().setupOtlpExporter()
+
+        expect(result).toBe(strandsTelemetry)
+      })
+    })
+
+    describe('resource configuration', () => {
+      it('should use default service name when OTEL_SERVICE_NAME is not set', async () => {
+        delete process.env.OTEL_SERVICE_NAME
+        const { strandsTelemetry } = await import('../config.js')
+
+        const result = strandsTelemetry.setupConsoleExporter()
+
+        expect(result).toBe(strandsTelemetry)
+      })
+
+      it('should use custom service name from environment', async () => {
+        process.env.OTEL_SERVICE_NAME = 'my-custom-service'
+        const { strandsTelemetry } = await import('../config.js')
+
+        const result = strandsTelemetry.setupConsoleExporter()
 
         expect(result).toBe(strandsTelemetry)
       })

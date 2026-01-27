@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Tracer, serialize } from '../tracer.js'
 import { Message, TextBlock, ToolResultBlock } from '../../types/messages.js'
 
@@ -125,7 +125,7 @@ describe('Tracer', () => {
     it('should accept telemetry config', () => {
       const config = {
         enabled: true,
-        customTraceAttributes: {
+        traceAttributes: {
           'custom.key': 'custom.value',
         },
       }
@@ -333,7 +333,7 @@ describe('Tracer', () => {
         'custom.user_id': 'user-456',
       }
 
-      const span = tracer.startAgentSpan({ messages, agentName: 'test-agent', customTraceAttributes: customAttributes })
+      const span = tracer.startAgentSpan({ messages, agentName: 'test-agent', traceAttributes: customAttributes })
 
       expect(span).toBeDefined()
 
@@ -570,7 +570,7 @@ describe('Tracer', () => {
       expect(() => {
         // Try to start spans with various invalid inputs
         tracer.startAgentSpan({ messages: [], agentName: '' }) // empty agent name
-        tracer.startAgentSpan({ messages: [], agentName: 'agent', customTraceAttributes: {} }) // empty custom attributes
+        tracer.startAgentSpan({ messages: [], agentName: 'agent', traceAttributes: {} }) // empty custom attributes
         tracer.startModelInvokeSpan({ messages: [] })
         tracer.startToolCallSpan({ tool: { name: '', toolUseId: '', input: {} } })
         tracer.startEventLoopCycleSpan({ cycleId: '', messages: [] })
@@ -714,7 +714,7 @@ describe('Tracer', () => {
         const span = tracer.startAgentSpan({
           messages,
           agentName: 'test-agent',
-          customTraceAttributes: customAttributes as Record<string, string>,
+          traceAttributes: customAttributes as Record<string, string>,
         })
         if (span) {
           tracer.endAgentSpan(span)
@@ -737,7 +737,7 @@ describe('Tracer', () => {
         'custom.user_id': 'user-456',
       }
 
-      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123', customTraceAttributes: customAttributes })
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123', traceAttributes: customAttributes })
       expect(span).toBeDefined()
 
       if (span) {
@@ -770,7 +770,7 @@ describe('Tracer', () => {
         'custom.array': [1, 2, 3],
       }
 
-      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123', customTraceAttributes: customAttributes })
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123', traceAttributes: customAttributes })
       expect(span).toBeDefined()
 
       if (span) {
@@ -790,7 +790,7 @@ describe('Tracer', () => {
         'custom.request_id': 'req-123',
       }
 
-      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-456', customTraceAttributes: customAttributes })
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-456', traceAttributes: customAttributes })
       expect(span).toBeDefined()
 
       if (span) {
@@ -822,7 +822,7 @@ describe('Tracer', () => {
           'custom.trace_id': 'trace-789',
         }
 
-        const modelSpan = tracer.startModelInvokeSpan({ messages, modelId: 'model-123', customTraceAttributes: customAttributes })
+        const modelSpan = tracer.startModelInvokeSpan({ messages, modelId: 'model-123', traceAttributes: customAttributes })
         expect(modelSpan).toBeDefined()
 
         if (modelSpan) {
@@ -856,7 +856,7 @@ describe('Tracer', () => {
       }
 
       // Create first model span
-      const span1 = tracer.startModelInvokeSpan({ messages, modelId: 'model-123', customTraceAttributes: customAttributes1 })
+      const span1 = tracer.startModelInvokeSpan({ messages, modelId: 'model-123', traceAttributes: customAttributes1 })
       expect(span1).toBeDefined()
 
       if (span1) {
@@ -870,7 +870,7 @@ describe('Tracer', () => {
       }
 
       // Create second model span
-      const span2 = tracer.startModelInvokeSpan({ messages, modelId: 'model-456', customTraceAttributes: customAttributes2 })
+      const span2 = tracer.startModelInvokeSpan({ messages, modelId: 'model-456', traceAttributes: customAttributes2 })
       expect(span2).toBeDefined()
 
       if (span2) {
@@ -1095,7 +1095,7 @@ describe('Tracer', () => {
         'custom.request_id': 'req-789',
       }
 
-      const span = tracer.startToolCallSpan({ tool: toolUse, customTraceAttributes: customAttributes })
+      const span = tracer.startToolCallSpan({ tool: toolUse, traceAttributes: customAttributes })
       expect(span).toBeDefined()
 
       if (span) {
@@ -1156,7 +1156,7 @@ describe('Tracer', () => {
         'custom.user_id': 'user-123',
       }
 
-      const span = tracer.startToolCallSpan({ tool: toolUse, customTraceAttributes: customAttributes })
+      const span = tracer.startToolCallSpan({ tool: toolUse, traceAttributes: customAttributes })
       expect(span).toBeDefined()
 
       if (span) {
@@ -1194,7 +1194,7 @@ describe('Tracer', () => {
           'custom.trace_id': 'trace-xyz',
         }
 
-        const toolSpan = tracer.startToolCallSpan({ tool: toolUse, customTraceAttributes: customAttributes })
+        const toolSpan = tracer.startToolCallSpan({ tool: toolUse, traceAttributes: customAttributes })
         expect(toolSpan).toBeDefined()
 
         if (toolSpan) {
@@ -1234,7 +1234,7 @@ describe('Tracer', () => {
       }
 
       // Create first tool call span
-      const span1 = tracer.startToolCallSpan({ tool: tools[0]!, customTraceAttributes: customAttributes1 })
+      const span1 = tracer.startToolCallSpan({ tool: tools[0]!, traceAttributes: customAttributes1 })
       expect(span1).toBeDefined()
 
       if (span1) {
@@ -1248,7 +1248,7 @@ describe('Tracer', () => {
       }
 
       // Create second tool call span
-      const span2 = tracer.startToolCallSpan({ tool: tools[1]!, customTraceAttributes: customAttributes2 })
+      const span2 = tracer.startToolCallSpan({ tool: tools[1]!, traceAttributes: customAttributes2 })
       expect(span2).toBeDefined()
 
       if (span2) {
@@ -1486,13 +1486,13 @@ describe('Tracer', () => {
       const parentSpan = tracer.startAgentSpan({
         messages,
         agentName: 'parent-agent',
-        customTraceAttributes: parentAttributes,
+        traceAttributes: parentAttributes,
       })
       expect(parentSpan).toBeDefined()
 
       if (parentSpan) {
         // Create child span with custom attributes - automatically parents to the active span
-        const childSpan = tracer.startEventLoopCycleSpan({ cycleId: 'cycle-1', messages, customTraceAttributes: childAttributes })
+        const childSpan = tracer.startEventLoopCycleSpan({ cycleId: 'cycle-1', messages, traceAttributes: childAttributes })
         expect(childSpan).toBeDefined()
 
         if (childSpan) {
@@ -1548,7 +1548,7 @@ describe('Tracer', () => {
         messages,
         agentName: 'test-agent',
         modelId: 'model-123',
-        customTraceAttributes: customAttributes,
+        traceAttributes: customAttributes,
       })
       expect(span).toBeDefined()
 
@@ -1600,7 +1600,7 @@ describe('Tracer', () => {
         messages,
         agentName: 'test-agent',
         modelId: 'model-789',
-        customTraceAttributes: customAttributes,
+        traceAttributes: customAttributes,
       })
       expect(span).toBeDefined()
 
@@ -1667,7 +1667,7 @@ describe('Tracer', () => {
         messages,
         agentName: 'agent-1',
         modelId: 'model-123',
-        customTraceAttributes: customAttributes1,
+        traceAttributes: customAttributes1,
       })
       expect(span1).toBeDefined()
 
@@ -1680,7 +1680,7 @@ describe('Tracer', () => {
         messages,
         agentName: 'agent-2',
         modelId: 'model-456',
-        customTraceAttributes: customAttributes2,
+        traceAttributes: customAttributes2,
       })
       expect(span2).toBeDefined()
 
@@ -1975,7 +1975,7 @@ describe('Tracer', () => {
         'custom.boolean': true,
       }
 
-      const span = tracer.startAgentSpan({ messages, agentName: 'test-agent', customTraceAttributes: customAttributes })
+      const span = tracer.startAgentSpan({ messages, agentName: 'test-agent', traceAttributes: customAttributes })
       expect(span).toBeDefined()
 
       if (span) {
@@ -1998,7 +1998,7 @@ describe('Tracer', () => {
       const span = tracer.startAgentSpan({
         messages,
         agentName: 'test-agent',
-        customTraceAttributes: customAttributes as Record<string, string>,
+        traceAttributes: customAttributes as Record<string, string>,
       })
       expect(span).toBeDefined()
 
@@ -2023,7 +2023,7 @@ describe('Tracer', () => {
         }),
       }
 
-      const span = tracer.startAgentSpan({ messages, agentName: 'test-agent', customTraceAttributes: customAttributes })
+      const span = tracer.startAgentSpan({ messages, agentName: 'test-agent', traceAttributes: customAttributes })
       expect(span).toBeDefined()
 
       if (span) {
@@ -2071,7 +2071,7 @@ describe('Tracer', () => {
         'custom.undefined': undefined as unknown as string,
       }
 
-      const span = tracer.startAgentSpan({ messages, agentName: 'test-agent', customTraceAttributes: customAttributes })
+      const span = tracer.startAgentSpan({ messages, agentName: 'test-agent', traceAttributes: customAttributes })
       expect(span).toBeDefined()
 
       if (span) {
@@ -2363,26 +2363,33 @@ describe('Additional Tracer Coverage', () => {
   })
 
   describe('getTracer', () => {
-    it('should throw when telemetry is not enabled', async () => {
+    it('should return a tracer even when telemetry is not configured', async () => {
+      vi.resetModules()
       const { getTracer } = await import('../tracer.js')
-      const { _resetTracerProvider } = await import('../config.js')
       
-      // Reset to ensure telemetry is not enabled
-      _resetTracerProvider()
-      
-      expect(() => getTracer()).toThrow('Telemetry is not enabled')
+      // OTEL returns a no-op tracer when no provider is registered
+      const tracer = getTracer()
+      expect(tracer).toBeDefined()
     })
 
-    it('should return a tracer when telemetry is enabled', async () => {
+    it('should return a tracer when telemetry is configured', async () => {
+      vi.resetModules()
       const { getTracer } = await import('../tracer.js')
-      const { strandsTelemetry, _resetTracerProvider } = await import('../config.js')
+      const { strandsTelemetry } = await import('../config.js')
       
-      // Enable telemetry
-      _resetTracerProvider()
+      // Configure telemetry
       strandsTelemetry.setupConsoleExporter()
       
-      const tracer1 = getTracer()
-      expect(tracer1).toBeDefined()
+      const tracer = getTracer()
+      expect(tracer).toBeDefined()
+    })
+
+    it('should accept config with traceAttributes', async () => {
+      vi.resetModules()
+      const { getTracer } = await import('../tracer.js')
+      
+      const tracer = getTracer({ traceAttributes: { 'custom.key': 'value' } })
+      expect(tracer).toBeDefined()
     })
   })
 

@@ -10,9 +10,7 @@
 
 import { context, SpanStatusCode, SpanKind, trace } from '@opentelemetry/api'
 import type { Span, Tracer as OtelTracer, SpanOptions, AttributeValue } from '@opentelemetry/api'
-import type { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'
 import { logger } from '../logging/index.js'
-import { initializeTracerProvider, isTelemetryEnabled } from './config.js'
 import type {
   TelemetryConfig,
   EndModelSpanOptions,
@@ -68,16 +66,15 @@ export function _resetContextStack(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Get or create a global tracer instance.
- * Only creates a tracer if telemetry is enabled globally.
+ * Get or create a tracer instance.
+ * Returns a tracer from the global OTEL API. If no provider is registered,
+ * OTEL returns a no-op tracer that safely does nothing.
  *
- * @returns A Tracer instance, or throws if telemetry is not enabled
+ * @param config - Optional tracer configuration
+ * @returns A Tracer instance
  */
-export function getTracer(): Tracer {
-  if (!isTelemetryEnabled()) {
-    throw new Error('Telemetry is not enabled. Initialize StrandsTelemetry first.')
-  }
-  return new Tracer()
+export function getTracer(config?: TelemetryConfig): Tracer {
+  return new Tracer(config)
 }
 
 /**
@@ -89,27 +86,26 @@ export function getTracer(): Tracer {
  */
 export class Tracer {
   private readonly _tracer: OtelTracer
-  private readonly _tracerProvider: NodeTracerProvider
   private readonly _useLatestConventions: boolean
   private readonly _includeToolDefinitions: boolean
-  private readonly _customTraceAttributes: Record<string, AttributeValue>
+  private readonly _traceAttributes: Record<string, AttributeValue>
 
   /**
    * Initialize the tracer with OpenTelemetry configuration.
    * Reads OTEL_SEMCONV_STABILITY_OPT_IN to determine convention version.
-   * Initializes the global tracer provider if not already done.
+   * Gets tracer from the global API to ensure ground truth - works correctly
+   * whether the user or Strands initialized the tracer provider.
    */
   constructor(config?: TelemetryConfig) {
-    this._customTraceAttributes = config?.customTraceAttributes ?? {}
+    this._traceAttributes = config?.traceAttributes ?? {}
 
     // Read semantic convention version from environment
     const optInValues = this._parseSemconvOptIn()
     this._useLatestConventions = optInValues.has('gen_ai_latest_experimental')
     this._includeToolDefinitions = optInValues.has('gen_ai_tool_definitions')
 
-    // Initialize tracer provider and get tracer from it
-    this._tracerProvider = initializeTracerProvider()
-    this._tracer = this._tracerProvider.getTracer('strands-agents')
+    // Get tracer from global API to ensure ground truth
+    this._tracer = trace.getTracer('strands-agents')
   }
 
 
@@ -128,7 +124,7 @@ export class Tracer {
       agentId,
       modelId,
       tools,
-      customTraceAttributes,
+      traceAttributes,
       toolsConfig,
       systemPrompt,
     } = options
@@ -177,7 +173,7 @@ export class Tracer {
         }
       }
 
-      const mergedAttributes = this._mergeAttributes(attributes, customTraceAttributes)
+      const mergedAttributes = this._mergeAttributes(attributes, traceAttributes)
       const span = this._createActiveSpan(spanName, mergedAttributes, SpanKind.INTERNAL)
 
       this._addEventMessages(span, messages)
@@ -224,6 +220,14 @@ export class Tracer {
       }
 
       this._closeSpan(span, attributes, error)
+
+      // Force flush after agent span ends to ensure spans are exported for short-lived scripts
+      const provider = trace.getTracerProvider()
+      if ('forceFlush' in provider && typeof (provider as { forceFlush: unknown }).forceFlush === 'function') {
+        ;(provider as { forceFlush: () => Promise<void> }).forceFlush().catch((err) => {
+          logger.warn(`error=<${err}> | failed to force flush tracer provider`)
+        })
+      }
     } catch (err) {
       logger.warn(`error=<${err}> | failed to end agent span`)
     }
@@ -238,7 +242,7 @@ export class Tracer {
    * Start a model invocation span as the active span.
    */
   startModelInvokeSpan(options: StartModelInvokeSpanOptions): Span {
-    const { messages, modelId, customTraceAttributes } = options
+    const { messages, modelId, traceAttributes } = options
 
     try {
       const attributes = this._getCommonAttributes('chat')
@@ -247,7 +251,7 @@ export class Tracer {
         attributes['gen_ai.request.model'] = modelId
       }
 
-      const mergedAttributes = this._mergeAttributes(attributes, customTraceAttributes)
+      const mergedAttributes = this._mergeAttributes(attributes, traceAttributes)
       const span = this._createActiveSpan('chat', mergedAttributes, SpanKind.INTERNAL)
 
       this._addEventMessages(span, messages)
@@ -301,14 +305,14 @@ export class Tracer {
    * Start a tool call span as the active span.
    */
   startToolCallSpan(options: StartToolCallSpanOptions): Span {
-    const { tool, customTraceAttributes } = options
+    const { tool, traceAttributes } = options
 
     try {
       const attributes = this._getCommonAttributes('execute_tool')
       attributes['gen_ai.tool.name'] = tool.name
       attributes['gen_ai.tool.call.id'] = tool.toolUseId
 
-      const mergedAttributes = this._mergeAttributes(attributes, customTraceAttributes)
+      const mergedAttributes = this._mergeAttributes(attributes, traceAttributes)
       const span = this._createActiveSpan(`execute_tool ${tool.name}`, mergedAttributes, SpanKind.INTERNAL)
 
       if (this._useLatestConventions) {
@@ -380,11 +384,11 @@ export class Tracer {
    * Start an event loop cycle span as the active span.
    */
   startEventLoopCycleSpan(options: StartEventLoopCycleSpanOptions): Span {
-    const { cycleId, messages, customTraceAttributes } = options
+    const { cycleId, messages, traceAttributes } = options
 
     try {
       const attributes: Record<string, AttributeValue> = { 'event_loop.cycle_id': cycleId }
-      const mergedAttributes = this._mergeAttributes(attributes, customTraceAttributes)
+      const mergedAttributes = this._mergeAttributes(attributes, traceAttributes)
       const span = this._createActiveSpan('execute_event_loop_cycle', mergedAttributes)
 
       this._addEventMessages(span, messages)
@@ -592,7 +596,7 @@ export class Tracer {
     standardAttributes: Record<string, AttributeValue>,
     customAttributes?: Record<string, AttributeValue>,
   ): Record<string, AttributeValue> {
-    const merged = { ...standardAttributes, ...this._customTraceAttributes }
+    const merged = { ...standardAttributes, ...this._traceAttributes }
     if (customAttributes) {
       Object.assign(merged, customAttributes)
     }
