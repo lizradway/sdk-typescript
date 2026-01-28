@@ -9,12 +9,11 @@
  * with browser environments.
  */
 
-import { context as apiContext, propagation } from '@opentelemetry/api'
+import { context as apiContext, propagation, trace } from '@opentelemetry/api'
 import { AsyncHooksContextManager } from '@opentelemetry/context-async-hooks'
 import { Resource } from '@opentelemetry/resources'
 import { NodeTracerProvider, ConsoleSpanExporter } from '@opentelemetry/sdk-trace-node'
-import { SimpleSpanProcessor, BatchSpanProcessor } from '@opentelemetry/sdk-trace-base'
-import type { SpanProcessor } from '@opentelemetry/sdk-trace-base'
+import { SimpleSpanProcessor, BatchSpanProcessor, type SpanProcessor } from '@opentelemetry/sdk-trace-base'
 import { CompositePropagator, W3CTraceContextPropagator, W3CBaggagePropagator } from '@opentelemetry/core'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { logger } from '../logging/index.js'
@@ -90,7 +89,7 @@ export interface TelemetryConfig {
  */
 export const telemetryConfig: TelemetryConfig = {
   setupOtlpExporter(options: OtlpExporterOptions = {}): TelemetryConfig {
-    const tracerProvider = initializeTracerProvider()
+    initializeTracerProvider()
 
     try {
       // Only pass explicit options if provided - OTEL SDK handles env vars automatically
@@ -100,7 +99,7 @@ export const telemetryConfig: TelemetryConfig = {
 
       const exporter = new OTLPTraceExporter(exporterConfig)
       const batchProcessor = new BatchSpanProcessor(exporter)
-      registerProviderWithProcessor(tracerProvider, batchProcessor)
+      addSpanProcessor(batchProcessor)
     } catch (error) {
       logger.warn(`error=<${error}> | failed to configure otlp exporter`)
     }
@@ -108,11 +107,11 @@ export const telemetryConfig: TelemetryConfig = {
   },
 
   setupConsoleExporter(): TelemetryConfig {
-    const tracerProvider = initializeTracerProvider()
+    initializeTracerProvider()
     try {
       const consoleExporter = new ConsoleSpanExporter()
       const simpleProcessor = new SimpleSpanProcessor(consoleExporter)
-      registerProviderWithProcessor(tracerProvider, simpleProcessor)
+      addSpanProcessor(simpleProcessor)
     } catch (error) {
       logger.warn(`error=<${error}> | failed to configure console exporter`)
     }
@@ -121,14 +120,14 @@ export const telemetryConfig: TelemetryConfig = {
 }
 
 /**
- * Initialize the tracer provider. Safe to call multiple times - returns the existing
- * provider if already initialized. Sets up AsyncHooksContextManager for context
- * propagation across async boundaries and configures W3C trace context propagators
- * for distributed tracing.
+ * Initialize the tracer provider and register it globally. Safe to call multiple
+ * times - returns early if already initialized. Sets up AsyncHooksContextManager
+ * for context propagation across async boundaries and configures W3C trace context
+ * propagators for distributed tracing.
  */
-function initializeTracerProvider(): NodeTracerProvider {
-  if (_tracerProvider) {
-    return _tracerProvider
+function initializeTracerProvider(): void {
+  if (_providerInitialized) {
+    return
   }
 
   const contextManager = new AsyncHooksContextManager()
@@ -136,36 +135,36 @@ function initializeTracerProvider(): NodeTracerProvider {
   apiContext.setGlobalContextManager(contextManager)
 
   const resource = getOtelResource()
-  _tracerProvider = new NodeTracerProvider({ resource })
+  const provider = new NodeTracerProvider({ resource })
 
   const propagator = new CompositePropagator({
     propagators: [new W3CBaggagePropagator(), new W3CTraceContextPropagator()],
   })
   propagation.setGlobalPropagator(propagator)
 
-  return _tracerProvider
+  // Register globally so trace.getTracerProvider() returns our provider
+  provider.register()
+  _providerInitialized = true
+
+  process.on('beforeExit', () => {
+    const globalProvider = trace.getTracerProvider()
+    if ('forceFlush' in globalProvider) {
+      ;(globalProvider as NodeTracerProvider).forceFlush().catch((err: unknown) => {
+        logger.warn(`error=<${err}> | failed to flush tracer provider on exit`)
+      })
+    }
+  })
 }
 
 /**
- * Register a span processor and ensure the provider is registered globally.
- * On first registration, also sets up a beforeExit handler to auto-flush
- * pending spans - this is important for short-lived scripts that exit before
- * the BatchSpanProcessor's scheduled export.
+ * Add a span processor to the global tracer provider.
  */
-function registerProviderWithProcessor(tracerProvider: NodeTracerProvider, processor: SpanProcessor): void {
-  tracerProvider.addSpanProcessor(processor)
-
-  if (!_providerRegistered) {
-    tracerProvider.register()
-    _providerRegistered = true
-
-    process.on('beforeExit', () => {
-      if (_tracerProvider) {
-        _tracerProvider.forceFlush().catch((err: unknown) => {
-          logger.warn(`error=<${err}> | failed to flush tracer provider on exit`)
-        })
-      }
-    })
+function addSpanProcessor(processor: SpanProcessor): void {
+  const provider = trace.getTracerProvider()
+  if ('addSpanProcessor' in provider) {
+    ;(provider as NodeTracerProvider).addSpanProcessor(processor)
+  } else {
+    logger.warn('global tracer provider does not support addSpanProcessor')
   }
 }
 
@@ -187,5 +186,4 @@ const DEFAULT_SERVICE_NAME = 'strands-agents'
 const DEFAULT_SERVICE_NAMESPACE = 'strands'
 const DEFAULT_DEPLOYMENT_ENVIRONMENT = 'development'
 
-let _tracerProvider: NodeTracerProvider | null = null
-let _providerRegistered = false
+let _providerInitialized = false
