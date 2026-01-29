@@ -55,6 +55,14 @@ describe('config', () => {
       expect(provider).toBeDefined()
     })
 
+    it('should work when called with no arguments', async () => {
+      const { telemetry } = await import('../index.js')
+
+      const provider = telemetry.setupTracer()
+
+      expect(provider).toBeDefined()
+    })
+
     it('should use OTEL env vars for OTLP configuration', async () => {
       process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://localhost:4318'
       process.env.OTEL_EXPORTER_OTLP_HEADERS = 'Authorization=Bearer token123'
