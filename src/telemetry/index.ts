@@ -3,9 +3,9 @@
  */
 
 import { trace, type Tracer } from '@opentelemetry/api'
-import { telemetryConfig } from './config.js'
+import { setupTracer, SERVICE_NAME } from './config.js'
 
-const SERVICE_NAME = 'strands-agents'
+export type { TracerConfig } from './config.js'
 
 /**
  * Telemetry namespace for Strands Agents SDK.
@@ -14,23 +14,20 @@ const SERVICE_NAME = 'strands-agents'
  * ```typescript
  * import { telemetry } from '@strands-agents/sdk'
  *
- * // Configure telemetry (registers global tracer provider)
- * telemetry.config
- *   .setupOtlpExporter()
- *   .setupConsoleExporter()
+ * // Configure telemetry
+ * const provider = telemetry.setupTracer({
+ *   exporters: { otlp: true, console: true }
+ * })
  *
- * // Get tracer from global API - respects user's provider if they set one up
+ * // Get tracer from global API
  * const tracer = telemetry.tracer
  * ```
  */
 export const telemetry = {
-  config: telemetryConfig,
+  setupTracer,
 
   /**
    * Get the tracer from the global OpenTelemetry API.
-   *
-   * Always retrieves the tracer from the globally registered tracer provider,
-   * ensuring we respect any user-configured provider rather than storing our own.
    */
   get tracer(): Tracer {
     return trace.getTracer(SERVICE_NAME)

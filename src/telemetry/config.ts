@@ -3,173 +3,127 @@
  *
  * This module provides centralized configuration and initialization functionality
  * for OpenTelemetry components and other telemetry infrastructure shared across Strands applications.
- *
- * Note: This module uses NodeTracerProvider and AsyncHooksContextManager, which are
- * Node.js-specific. It works with Node.js and Bun runtimes but is not compatible
- * with browser environments.
  */
 
-import { context as apiContext, propagation, trace } from '@opentelemetry/api'
+import { context as apiContext, propagation } from '@opentelemetry/api'
 import { AsyncHooksContextManager } from '@opentelemetry/context-async-hooks'
 import { Resource } from '@opentelemetry/resources'
 import { NodeTracerProvider, ConsoleSpanExporter } from '@opentelemetry/sdk-trace-node'
-import { SimpleSpanProcessor, BatchSpanProcessor, type SpanProcessor } from '@opentelemetry/sdk-trace-base'
+import { SimpleSpanProcessor, BatchSpanProcessor } from '@opentelemetry/sdk-trace-base'
 import { CompositePropagator, W3CTraceContextPropagator, W3CBaggagePropagator } from '@opentelemetry/core'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { logger } from '../logging/index.js'
 
-/**
- * Options for configuring the OTLP exporter.
- */
-export interface OtlpExporterOptions {
-  /**
-   * OTLP endpoint URL. Falls back to OTEL_EXPORTER_OTLP_ENDPOINT env var.
-   * Must be a valid HTTP/HTTPS URL (e.g., 'http://localhost:4318').
-   */
-  endpoint?: string
-  /**
-   * Headers to include in OTLP requests (e.g., for authentication).
-   * Falls back to OTEL_EXPORTER_OTLP_HEADERS env var.
-   */
-  headers?: Record<string, string>
-}
+export const SERVICE_NAME = 'strands-agents'
+
+const DEFAULT_SERVICE_NAMESPACE = 'strands'
+const DEFAULT_DEPLOYMENT_ENVIRONMENT = 'development'
 
 /**
- * Interface for telemetry configuration.
- *
- * If no exporter is configured, the tracer provider is still initialized but
- * spans will not be exported.
- *
- * Setup methods are safe to call multiple times - each call adds an additional
- * exporter. The tracer provider is initialized lazily on first setup call.
+ * Configuration options for setting up the tracer.
  */
-export interface TelemetryConfig {
+export interface TracerConfig {
   /**
-   * Set up OTLP exporter for the tracer provider.
-   * @param options - OTLP exporter configuration options
-   * @returns This object for method chaining
+   * Custom NodeTracerProvider instance. If not provided, one will be
+   * created with default configuration.
    */
-  setupOtlpExporter(options?: OtlpExporterOptions): TelemetryConfig
+  provider?: NodeTracerProvider
+
   /**
-   * Set up console exporter for the tracer provider.
-   * @returns This object for method chaining
+   * Exporter configuration.
    */
-  setupConsoleExporter(): TelemetryConfig
+  exporters?: {
+    /**
+     * Enable OTLP exporter. Uses OTEL_EXPORTER_OTLP_ENDPOINT and
+     * OTEL_EXPORTER_OTLP_HEADERS env vars automatically.
+     */
+    otlp?: boolean
+    /**
+     * Enable console exporter for debugging.
+     */
+    console?: boolean
+  }
 }
 
+let _provider: NodeTracerProvider | null = null
+
 /**
- * OpenTelemetry configuration and setup for Strands applications.
+ * Set up the tracer provider with the given configuration.
  *
- * A singleton object that initializes a tracer provider with text map propagators
- * and registers itself as the global telemetry instance. Agents automatically
- * pick up this global instance for tracing.
- *
- * Trace exporters (console, OTLP) can be set up individually using dedicated methods
- * that support method chaining for convenient configuration.
+ * @param config - Tracer configuration options
+ * @returns The configured NodeTracerProvider
  *
  * @example
  * ```typescript
- * import { Agent, telemetry } from '@strands-agents/sdk'
+ * import { telemetry } from '@strands-agents/sdk'
  *
- * // Initialize telemetry - registers global tracer provider
- * telemetry.config
- *   .setupOtlpExporter()     // Optional: Export traces to OTLP endpoint
- *   .setupConsoleExporter()  // Optional: Log spans to console
+ * // Simple setup with defaults
+ * const provider = telemetry.setupTracer({
+ *   exporters: { otlp: true }
+ * })
  *
- * // Create agent - automatically picks up global telemetry
- * const agent = new Agent({
- *   model,
- *   tools: [weather_tool],
- *   traceAttributes: {
- *     'session.id': 'abc-1234',
- *     'user.id': 'user@example.com',
- *   },
+ * // Custom provider
+ * telemetry.setupTracer({
+ *   provider: new NodeTracerProvider({ resource: myResource }),
+ *   exporters: { otlp: true, console: true }
  * })
  * ```
  */
-export const telemetryConfig: TelemetryConfig = {
-  setupOtlpExporter(options: OtlpExporterOptions = {}): TelemetryConfig {
-    initializeTracerProvider()
-
-    try {
-      // Only pass explicit options if provided - OTEL SDK handles env vars automatically
-      const exporterConfig: { url?: string; headers?: Record<string, string> } = {}
-      if (options.endpoint) exporterConfig.url = options.endpoint
-      if (options.headers) exporterConfig.headers = options.headers
-
-      const exporter = new OTLPTraceExporter(exporterConfig)
-      const batchProcessor = new BatchSpanProcessor(exporter)
-      addSpanProcessor(batchProcessor)
-    } catch (error) {
-      logger.warn(`error=<${error}> | failed to configure otlp exporter`)
-    }
-    return this
-  },
-
-  setupConsoleExporter(): TelemetryConfig {
-    initializeTracerProvider()
-    try {
-      const consoleExporter = new ConsoleSpanExporter()
-      const simpleProcessor = new SimpleSpanProcessor(consoleExporter)
-      addSpanProcessor(simpleProcessor)
-    } catch (error) {
-      logger.warn(`error=<${error}> | failed to configure console exporter`)
-    }
-    return this
-  },
-}
-
-/**
- * Initialize the tracer provider and register it globally. Safe to call multiple
- * times - returns early if already initialized. Sets up AsyncHooksContextManager
- * for context propagation across async boundaries and configures W3C trace context
- * propagators for distributed tracing.
- */
-function initializeTracerProvider(): void {
-  if (_providerInitialized) {
-    return
+export function setupTracer(config: TracerConfig = {}): NodeTracerProvider {
+  if (_provider) {
+    logger.warn('tracer provider already initialized, returning existing provider')
+    return _provider
   }
 
+  // Set up context manager
   const contextManager = new AsyncHooksContextManager()
   contextManager.enable()
   apiContext.setGlobalContextManager(contextManager)
 
-  const resource = getOtelResource()
-  const provider = new NodeTracerProvider({ resource })
+  // Use provided provider or create default
+  _provider = config.provider ?? new NodeTracerProvider({ resource: getOtelResource() })
 
+  // Set up propagators
   const propagator = new CompositePropagator({
     propagators: [new W3CBaggagePropagator(), new W3CTraceContextPropagator()],
   })
   propagation.setGlobalPropagator(propagator)
 
-  // Register globally so trace.getTracerProvider() returns our provider
-  provider.register()
-  _providerInitialized = true
+  // Add exporters if requested
+  if (config.exporters?.otlp) addOtlpExporter(_provider)
+  if (config.exporters?.console) addConsoleExporter(_provider)
 
-  process.on('beforeExit', () => {
-    const globalProvider = trace.getTracerProvider()
-    if ('forceFlush' in globalProvider) {
-      ;(globalProvider as NodeTracerProvider).forceFlush().catch((err: unknown) => {
+  _provider.register()
+
+  process.once('beforeExit', () => {
+    if (_provider) {
+      _provider.forceFlush().catch((err: unknown) => {
         logger.warn(`error=<${err}> | failed to flush tracer provider on exit`)
       })
     }
   })
+
+  return _provider
 }
 
-/**
- * Add a span processor to the global tracer provider.
- */
-function addSpanProcessor(processor: SpanProcessor): void {
-  const provider = trace.getTracerProvider()
-  if ('addSpanProcessor' in provider) {
-    ;(provider as NodeTracerProvider).addSpanProcessor(processor)
-  } else {
-    logger.warn('global tracer provider does not support addSpanProcessor')
+function addOtlpExporter(provider: NodeTracerProvider): void {
+  try {
+    provider.addSpanProcessor(new BatchSpanProcessor(new OTLPTraceExporter()))
+  } catch (error) {
+    logger.warn(`error=<${error}> | failed to configure otlp exporter`)
+  }
+}
+
+function addConsoleExporter(provider: NodeTracerProvider): void {
+  try {
+    provider.addSpanProcessor(new SimpleSpanProcessor(new ConsoleSpanExporter()))
+  } catch (error) {
+    logger.warn(`error=<${error}> | failed to configure console exporter`)
   }
 }
 
 function getOtelResource(): Resource {
-  const serviceName = process.env.OTEL_SERVICE_NAME || DEFAULT_SERVICE_NAME
+  const serviceName = process.env.OTEL_SERVICE_NAME || SERVICE_NAME
   const serviceNamespace = process.env.OTEL_SERVICE_NAMESPACE || DEFAULT_SERVICE_NAMESPACE
   const deploymentEnvironment = process.env.OTEL_DEPLOYMENT_ENVIRONMENT || DEFAULT_DEPLOYMENT_ENVIRONMENT
 
@@ -182,8 +136,10 @@ function getOtelResource(): Resource {
   })
 }
 
-const DEFAULT_SERVICE_NAME = 'strands-agents'
-const DEFAULT_SERVICE_NAMESPACE = 'strands'
-const DEFAULT_DEPLOYMENT_ENVIRONMENT = 'development'
-
-let _providerInitialized = false
+/**
+ * Reset the telemetry state (for testing only).
+ * @internal
+ */
+export function _resetTelemetryState(): void {
+  _provider = null
+}
