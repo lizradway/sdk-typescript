@@ -135,11 +135,3 @@ function getOtelResource(): Resource {
     'telemetry.sdk.language': 'typescript',
   })
 }
-
-/**
- * Reset the telemetry state (for testing only).
- * @internal
- */
-export function _resetTelemetryState(): void {
-  _provider = null
-}
