@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { trace } from '@opentelemetry/api'
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'
 
-describe('config', () => {
+describe('setupTracer', () => {
   const originalEnv = { ...process.env }
 
   beforeEach(() => {
@@ -13,68 +12,9 @@ describe('config', () => {
     process.env = { ...originalEnv }
   })
 
-  describe('telemetry.setupTracer', () => {
-    it('should return a NodeTracerProvider', async () => {
-      const { telemetry } = await import('../index.js')
-
-      const provider = telemetry.setupTracer({ exporters: { console: true } })
-
-      expect(provider).toBeInstanceOf(NodeTracerProvider)
-    })
-
-    it('should configure tracer with OTLP exporter', async () => {
-      const { telemetry } = await import('../index.js')
-
-      const provider = telemetry.setupTracer({ exporters: { otlp: true } })
-
-      expect(provider).toBeDefined()
-      expect(trace.getTracerProvider()).toBeDefined()
-    })
-
-    it('should configure tracer with console exporter', async () => {
-      const { telemetry } = await import('../index.js')
-
-      const provider = telemetry.setupTracer({ exporters: { console: true } })
-
-      expect(provider).toBeDefined()
-    })
-
-    it('should configure tracer with both exporters', async () => {
-      const { telemetry } = await import('../index.js')
-
-      const provider = telemetry.setupTracer({ exporters: { otlp: true, console: true } })
-
-      expect(provider).toBeDefined()
-    })
-
-    it('should configure tracer with no exporters', async () => {
-      const { telemetry } = await import('../index.js')
-
-      const provider = telemetry.setupTracer({})
-
-      expect(provider).toBeDefined()
-    })
-
-    it('should work when called with no arguments', async () => {
-      const { telemetry } = await import('../index.js')
-
-      const provider = telemetry.setupTracer()
-
-      expect(provider).toBeDefined()
-    })
-
-    it('should use OTEL env vars for OTLP configuration', async () => {
-      process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://localhost:4318'
-      process.env.OTEL_EXPORTER_OTLP_HEADERS = 'Authorization=Bearer token123'
-      const { telemetry } = await import('../index.js')
-
-      const provider = telemetry.setupTracer({ exporters: { otlp: true } })
-
-      expect(provider).toBeDefined()
-    })
-
-    it('should return existing provider if already initialized', async () => {
-      const { telemetry } = await import('../index.js')
+  describe('singleton behavior', () => {
+    it('should return the same provider instance when called twice', async () => {
+      const telemetry = await import('../index.js')
 
       const provider1 = telemetry.setupTracer({ exporters: { console: true } })
       const provider2 = telemetry.setupTracer({ exporters: { otlp: true } })
@@ -82,84 +22,145 @@ describe('config', () => {
       expect(provider1).toBe(provider2)
     })
 
-    describe('custom provider', () => {
-      it('should accept a custom tracer provider', async () => {
-        const { telemetry } = await import('../index.js')
-        const customProvider = new NodeTracerProvider()
+    it('should log a warning when called twice', async () => {
+      const { logger } = await import('../../logging/index.js')
+      const warnSpy = vi.spyOn(logger, 'warn')
+      const telemetry = await import('../index.js')
 
-        const provider = telemetry.setupTracer({ provider: customProvider, exporters: { console: true } })
+      telemetry.setupTracer()
+      telemetry.setupTracer()
 
-        expect(provider).toBe(customProvider)
-      })
-    })
-
-    describe('resource configuration', () => {
-      it('should use default service name when OTEL_SERVICE_NAME is not set', async () => {
-        delete process.env.OTEL_SERVICE_NAME
-        const { telemetry } = await import('../index.js')
-
-        const provider = telemetry.setupTracer({ exporters: { console: true } })
-
-        expect(provider).toBeDefined()
-      })
-
-      it('should use custom service name from environment', async () => {
-        process.env.OTEL_SERVICE_NAME = 'my-custom-service'
-        const { telemetry } = await import('../index.js')
-
-        const provider = telemetry.setupTracer({ exporters: { console: true } })
-
-        expect(provider).toBeDefined()
-      })
-
-      it('should use custom service namespace from environment', async () => {
-        process.env.OTEL_SERVICE_NAMESPACE = 'my-namespace'
-        const { telemetry } = await import('../index.js')
-
-        const provider = telemetry.setupTracer({ exporters: { console: true } })
-
-        expect(provider).toBeDefined()
-      })
-
-      it('should use custom deployment environment from environment', async () => {
-        process.env.OTEL_DEPLOYMENT_ENVIRONMENT = 'production'
-        const { telemetry } = await import('../index.js')
-
-        const provider = telemetry.setupTracer({ exporters: { console: true } })
-
-        expect(provider).toBeDefined()
-      })
+      expect(warnSpy).toHaveBeenCalledWith('tracer provider already initialized, returning existing provider')
     })
   })
 
-  describe('telemetry.tracer', () => {
-    it('should return a tracer from the global API', async () => {
-      const { telemetry } = await import('../index.js')
+  describe('custom provider', () => {
+    it('should use custom provider instead of creating a new one', async () => {
+      const telemetry = await import('../index.js')
+      const customProvider = new NodeTracerProvider()
 
-      const tracer = telemetry.tracer
+      const provider = telemetry.setupTracer({ provider: customProvider })
 
-      expect(tracer).toBeDefined()
-      expect(typeof tracer.startSpan).toBe('function')
+      expect(provider).toBe(customProvider)
+    })
+  })
+
+  describe('exporter configuration', () => {
+    it('should add OTLP exporter when exporters.otlp is true', async () => {
+      const telemetry = await import('../index.js')
+
+      const provider = telemetry.setupTracer({ exporters: { otlp: true } })
+
+      // NodeTracerProvider stores processors in _registeredSpanProcessors
+      const processors = (provider as unknown as { _registeredSpanProcessors: unknown[] })._registeredSpanProcessors
+      expect(processors.length).toBe(1)
     })
 
-    it('should return the same tracer instance on multiple accesses', async () => {
-      const { telemetry } = await import('../index.js')
+    it('should add console exporter when exporters.console is true', async () => {
+      const telemetry = await import('../index.js')
 
-      const tracer1 = telemetry.tracer
-      const tracer2 = telemetry.tracer
+      const provider = telemetry.setupTracer({ exporters: { console: true } })
 
-      expect(tracer1).toBe(tracer2)
+      const processors = (provider as unknown as { _registeredSpanProcessors: unknown[] })._registeredSpanProcessors
+      expect(processors.length).toBe(1)
     })
 
-    it('should use strands-agents as the service name', async () => {
-      const { telemetry } = await import('../index.js')
-      const getTracerSpy = vi.spyOn(trace, 'getTracer')
+    it('should add both exporters when both are true', async () => {
+      const telemetry = await import('../index.js')
 
-      const _tracer = telemetry.tracer
+      const provider = telemetry.setupTracer({ exporters: { otlp: true, console: true } })
 
-      expect(getTracerSpy).toHaveBeenCalledWith('strands-agents')
-      expect(_tracer).toBeDefined()
-      getTracerSpy.mockRestore()
+      const processors = (provider as unknown as { _registeredSpanProcessors: unknown[] })._registeredSpanProcessors
+      expect(processors.length).toBe(2)
+    })
+
+    it('should add no exporters when both are false', async () => {
+      const telemetry = await import('../index.js')
+
+      const provider = telemetry.setupTracer({ exporters: { otlp: false, console: false } })
+
+      const processors = (provider as unknown as { _registeredSpanProcessors: unknown[] })._registeredSpanProcessors
+      expect(processors.length).toBe(0)
+    })
+
+    it('should add no exporters when exporters config is empty', async () => {
+      const telemetry = await import('../index.js')
+
+      const provider = telemetry.setupTracer({})
+
+      const processors = (provider as unknown as { _registeredSpanProcessors: unknown[] })._registeredSpanProcessors
+      expect(processors.length).toBe(0)
+    })
+  })
+
+  describe('resource attributes', () => {
+    it('should use strands-agents as default service name', async () => {
+      delete process.env.OTEL_SERVICE_NAME
+      const telemetry = await import('../index.js')
+
+      const provider = telemetry.setupTracer()
+
+      expect(provider.resource.attributes['service.name']).toBe('strands-agents')
+    })
+
+    it('should use OTEL_SERVICE_NAME when set', async () => {
+      process.env.OTEL_SERVICE_NAME = 'my-custom-service'
+      const telemetry = await import('../index.js')
+
+      const provider = telemetry.setupTracer()
+
+      expect(provider.resource.attributes['service.name']).toBe('my-custom-service')
+    })
+
+    it('should use OTEL_SERVICE_NAMESPACE when set', async () => {
+      process.env.OTEL_SERVICE_NAMESPACE = 'my-namespace'
+      const telemetry = await import('../index.js')
+
+      const provider = telemetry.setupTracer()
+
+      expect(provider.resource.attributes['service.namespace']).toBe('my-namespace')
+    })
+
+    it('should use OTEL_DEPLOYMENT_ENVIRONMENT when set', async () => {
+      process.env.OTEL_DEPLOYMENT_ENVIRONMENT = 'production'
+      const telemetry = await import('../index.js')
+
+      const provider = telemetry.setupTracer()
+
+      expect(provider.resource.attributes['deployment.environment']).toBe('production')
+    })
+
+    it('should include default resource attributes', async () => {
+      const telemetry = await import('../index.js')
+
+      const provider = telemetry.setupTracer()
+
+      expect(provider.resource.attributes['service.name']).toBe('strands-agents')
+      expect(provider.resource.attributes['service.namespace']).toBe('strands')
+      expect(provider.resource.attributes['deployment.environment']).toBe('development')
+      expect(provider.resource.attributes['telemetry.sdk.name']).toBe('opentelemetry')
+      expect(provider.resource.attributes['telemetry.sdk.language']).toBe('typescript')
+    })
+
+    it('should merge OTEL_RESOURCE_ATTRIBUTES with defaults', async () => {
+      process.env.OTEL_RESOURCE_ATTRIBUTES = 'service.version=1.0.0,custom.team=platform'
+      const telemetry = await import('../index.js')
+
+      const provider = telemetry.setupTracer()
+
+      expect(provider.resource.attributes['service.version']).toBe('1.0.0')
+      expect(provider.resource.attributes['custom.team']).toBe('platform')
+      expect(provider.resource.attributes['service.name']).toBe('strands-agents')
+    })
+
+    it('should allow OTEL_RESOURCE_ATTRIBUTES to override defaults', async () => {
+      process.env.OTEL_RESOURCE_ATTRIBUTES = 'service.name=custom-service,deployment.environment=production'
+      const telemetry = await import('../index.js')
+
+      const provider = telemetry.setupTracer()
+
+      expect(provider.resource.attributes['service.name']).toBe('custom-service')
+      expect(provider.resource.attributes['deployment.environment']).toBe('production')
     })
   })
 })

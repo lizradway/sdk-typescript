@@ -176,4 +176,5 @@ export type { Logger } from './logging/types.js'
 export { type McpClientConfig, McpClient } from './mcp.js'
 
 // Telemetry
-export { telemetry } from './telemetry/index.js'
+import * as telemetry from './telemetry/index.js'
+export { telemetry }

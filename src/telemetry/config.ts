@@ -7,14 +7,14 @@
 
 import { context as apiContext, propagation } from '@opentelemetry/api'
 import { AsyncHooksContextManager } from '@opentelemetry/context-async-hooks'
-import { Resource } from '@opentelemetry/resources'
+import { Resource, envDetectorSync } from '@opentelemetry/resources'
 import { NodeTracerProvider, ConsoleSpanExporter } from '@opentelemetry/sdk-trace-node'
 import { SimpleSpanProcessor, BatchSpanProcessor } from '@opentelemetry/sdk-trace-base'
 import { CompositePropagator, W3CTraceContextPropagator, W3CBaggagePropagator } from '@opentelemetry/core'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { logger } from '../logging/index.js'
 
-export const SERVICE_NAME = 'strands-agents'
+const SERVICE_NAME = 'strands-agents'
 
 const DEFAULT_SERVICE_NAMESPACE = 'strands'
 const DEFAULT_DEPLOYMENT_ENVIRONMENT = 'development'
@@ -95,6 +95,7 @@ export function setupTracer(config: TracerConfig = {}): NodeTracerProvider {
 
   _provider.register()
 
+  // Flush pending spans on exit for short-lived scripts using BatchSpanProcessor
   process.once('beforeExit', () => {
     if (_provider) {
       _provider.forceFlush().catch((err: unknown) => {
@@ -127,11 +128,15 @@ function getOtelResource(): Resource {
   const serviceNamespace = process.env.OTEL_SERVICE_NAMESPACE || DEFAULT_SERVICE_NAMESPACE
   const deploymentEnvironment = process.env.OTEL_DEPLOYMENT_ENVIRONMENT || DEFAULT_DEPLOYMENT_ENVIRONMENT
 
-  return new Resource({
+  const defaultResource = new Resource({
     'service.name': serviceName,
     'service.namespace': serviceNamespace,
     'deployment.environment': deploymentEnvironment,
     'telemetry.sdk.name': 'opentelemetry',
     'telemetry.sdk.language': 'typescript',
   })
+
+  // Merge with OTEL_RESOURCE_ATTRIBUTES env var (env attrs take precedence)
+  const envResource = envDetectorSync.detect()
+  return defaultResource.merge(envResource)
 }
