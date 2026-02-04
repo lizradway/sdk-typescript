@@ -1,11 +1,26 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'
+import { NodeTracerProvider, ConsoleSpanExporter } from '@opentelemetry/sdk-trace-node'
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
+
+// Mock the exporters
+vi.mock('@opentelemetry/exporter-trace-otlp-http', () => ({
+  OTLPTraceExporter: vi.fn(),
+}))
+
+vi.mock('@opentelemetry/sdk-trace-node', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@opentelemetry/sdk-trace-node')>()
+  return {
+    ...actual,
+    ConsoleSpanExporter: vi.fn(),
+  }
+})
 
 describe('setupTracer', () => {
   const originalEnv = { ...process.env }
 
   beforeEach(() => {
     vi.resetModules()
+    vi.clearAllMocks()
   })
 
   afterEach(() => {
@@ -23,6 +38,7 @@ describe('setupTracer', () => {
     })
 
     it('should log a warning when called twice', async () => {
+      // Must dynamically import logger to get the same instance used by the fresh telemetry module
       const { logger } = await import('../../logging/index.js')
       const warnSpy = vi.spyOn(logger, 'warn')
       const telemetry = await import('../index.js')
@@ -49,53 +65,49 @@ describe('setupTracer', () => {
     it('should add OTLP exporter when exporters.otlp is true', async () => {
       const telemetry = await import('../index.js')
 
-      const provider = telemetry.setupTracer({ exporters: { otlp: true } })
+      telemetry.setupTracer({ exporters: { otlp: true } })
 
-      // NodeTracerProvider stores processors in _registeredSpanProcessors
-      const processors = (provider as unknown as { _registeredSpanProcessors: unknown[] })._registeredSpanProcessors
-      expect(processors.length).toBe(1)
+      expect(OTLPTraceExporter).toHaveBeenCalled()
     })
 
     it('should add console exporter when exporters.console is true', async () => {
       const telemetry = await import('../index.js')
 
-      const provider = telemetry.setupTracer({ exporters: { console: true } })
+      telemetry.setupTracer({ exporters: { console: true } })
 
-      const processors = (provider as unknown as { _registeredSpanProcessors: unknown[] })._registeredSpanProcessors
-      expect(processors.length).toBe(1)
+      expect(ConsoleSpanExporter).toHaveBeenCalled()
     })
 
     it('should add both exporters when both are true', async () => {
       const telemetry = await import('../index.js')
 
-      const provider = telemetry.setupTracer({ exporters: { otlp: true, console: true } })
+      telemetry.setupTracer({ exporters: { otlp: true, console: true } })
 
-      const processors = (provider as unknown as { _registeredSpanProcessors: unknown[] })._registeredSpanProcessors
-      expect(processors.length).toBe(2)
+      expect(OTLPTraceExporter).toHaveBeenCalled()
+      expect(ConsoleSpanExporter).toHaveBeenCalled()
     })
 
     it('should add no exporters when both are false', async () => {
       const telemetry = await import('../index.js')
 
-      const provider = telemetry.setupTracer({ exporters: { otlp: false, console: false } })
+      telemetry.setupTracer({ exporters: { otlp: false, console: false } })
 
-      const processors = (provider as unknown as { _registeredSpanProcessors: unknown[] })._registeredSpanProcessors
-      expect(processors.length).toBe(0)
+      expect(OTLPTraceExporter).not.toHaveBeenCalled()
+      expect(ConsoleSpanExporter).not.toHaveBeenCalled()
     })
 
     it('should add no exporters when exporters config is empty', async () => {
       const telemetry = await import('../index.js')
 
-      const provider = telemetry.setupTracer({})
+      telemetry.setupTracer({})
 
-      const processors = (provider as unknown as { _registeredSpanProcessors: unknown[] })._registeredSpanProcessors
-      expect(processors.length).toBe(0)
+      expect(OTLPTraceExporter).not.toHaveBeenCalled()
+      expect(ConsoleSpanExporter).not.toHaveBeenCalled()
     })
   })
 
   describe('resource attributes', () => {
     it('should use strands-agents as default service name', async () => {
-      delete process.env.OTEL_SERVICE_NAME
       const telemetry = await import('../index.js')
 
       const provider = telemetry.setupTracer()

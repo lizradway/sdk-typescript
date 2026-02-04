@@ -5,12 +5,9 @@
  * for OpenTelemetry components and other telemetry infrastructure shared across Strands applications.
  */
 
-import { context as apiContext, propagation } from '@opentelemetry/api'
-import { AsyncHooksContextManager } from '@opentelemetry/context-async-hooks'
 import { Resource, envDetectorSync } from '@opentelemetry/resources'
 import { NodeTracerProvider, ConsoleSpanExporter } from '@opentelemetry/sdk-trace-node'
 import { SimpleSpanProcessor, BatchSpanProcessor } from '@opentelemetry/sdk-trace-base'
-import { CompositePropagator, W3CTraceContextPropagator, W3CBaggagePropagator } from '@opentelemetry/core'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { logger } from '../logging/index.js'
 
@@ -74,24 +71,14 @@ export function setupTracer(config: TracerConfig = {}): NodeTracerProvider {
     return _provider
   }
 
-  // Set up context manager
-  const contextManager = new AsyncHooksContextManager()
-  contextManager.enable()
-  apiContext.setGlobalContextManager(contextManager)
-
   // Use provided provider or create default
   _provider = config.provider ?? new NodeTracerProvider({ resource: getOtelResource() })
-
-  // Set up propagators
-  const propagator = new CompositePropagator({
-    propagators: [new W3CBaggagePropagator(), new W3CTraceContextPropagator()],
-  })
-  propagation.setGlobalPropagator(propagator)
 
   // Add exporters if requested
   if (config.exporters?.otlp) addOtlpExporter(_provider)
   if (config.exporters?.console) addConsoleExporter(_provider)
 
+  // register() sets up global tracer provider, context manager, and propagators
   _provider.register()
 
   // Flush pending spans on exit for short-lived scripts using BatchSpanProcessor
