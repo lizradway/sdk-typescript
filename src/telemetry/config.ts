@@ -15,7 +15,6 @@ import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { logger } from '../logging/index.js'
 
 const SERVICE_NAME = 'strands-agents'
-
 const DEFAULT_SERVICE_NAMESPACE = 'strands'
 const DEFAULT_DEPLOYMENT_ENVIRONMENT = 'development'
 
