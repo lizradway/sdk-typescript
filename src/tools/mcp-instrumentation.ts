@@ -79,13 +79,3 @@ export function instrumentMcpClient(mcpClient: McpClient): void {
     }
   }
 }
-
-/**
- * Checks if an MCP client has been instrumented.
- *
- * @param mcpClient - The MCP client to check
- * @returns True if the client has been instrumented
- */
-export function isInstrumented(mcpClient: McpClient): boolean {
-  return _instrumentedClients.has(mcpClient)
-}

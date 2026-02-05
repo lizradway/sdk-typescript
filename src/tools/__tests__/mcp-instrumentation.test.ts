@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { instrumentMcpClient, isInstrumented } from '../mcp-instrumentation.js'
+import { instrumentMcpClient } from '../mcp-instrumentation.js'
 import type { McpClient } from '../../mcp.js'
 import type { McpTool } from '../mcp-tool.js'
 import type { JSONValue } from '../../types/json.js'
@@ -22,12 +22,6 @@ describe('mcp-instrumentation', () => {
   })
 
   describe('instrumentMcpClient', () => {
-    it('should instrument an MCP client', () => {
-      instrumentMcpClient(mockMcpClient)
-
-      expect(isInstrumented(mockMcpClient)).toBe(true)
-    })
-
     it('should not instrument the same client twice', () => {
       instrumentMcpClient(mockMcpClient)
       const firstCallTool = mockMcpClient.callTool
@@ -188,18 +182,6 @@ describe('mcp-instrumentation', () => {
 
       // Should call without _meta since trace ID is empty
       expect(originalCallTool).toHaveBeenCalledWith(mockTool, args)
-    })
-  })
-
-  describe('isInstrumented', () => {
-    it('should return false for non-instrumented client', () => {
-      expect(isInstrumented(mockMcpClient)).toBe(false)
-    })
-
-    it('should return true for instrumented client', () => {
-      instrumentMcpClient(mockMcpClient)
-
-      expect(isInstrumented(mockMcpClient)).toBe(true)
     })
   })
 })
