@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { Message } from '../../types/messages.js'
 import { TestModelProvider, collectGenerator } from '../../__fixtures__/model-test-helpers.js'
 import { MaxTokensError, ModelError } from '../../errors.js'
-import { Model } from '../model.js'
+import { Model, getModelId } from '../model.js'
 import type { BaseModelConfig, StreamOptions } from '../model.js'
 import type { ModelStreamEvent } from '../streaming.js'
 
@@ -31,6 +31,57 @@ class ErrorThrowingModelProvider extends Model<BaseModelConfig> {
     throw this.errorToThrow
   }
 }
+
+/**
+ * Test model provider for getModelId tests.
+ */
+class TestModelForGetModelId extends Model<BaseModelConfig> {
+  private config: BaseModelConfig
+
+  constructor(config: BaseModelConfig = {}) {
+    super()
+    this.config = config
+  }
+
+  updateConfig(modelConfig: BaseModelConfig): void {
+    this.config = { ...this.config, ...modelConfig }
+  }
+
+  getConfig(): BaseModelConfig {
+    return this.config
+  }
+
+  // eslint-disable-next-line require-yield
+  async *stream(_messages: Message[], _options?: StreamOptions): AsyncGenerator<ModelStreamEvent> {
+    throw new Error('Not implemented')
+  }
+}
+
+describe('getModelId', () => {
+  it('should return modelId when configured', () => {
+    const model = new TestModelForGetModelId({ modelId: 'anthropic.claude-3-5-sonnet' })
+
+    const result = getModelId(model)
+
+    expect(result).toBe('anthropic.claude-3-5-sonnet')
+  })
+
+  it('should return constructor name when modelId is not configured', () => {
+    const model = new TestModelForGetModelId({})
+
+    const result = getModelId(model)
+
+    expect(result).toBe('TestModelForGetModelId')
+  })
+
+  it('should return constructor name when modelId is empty string', () => {
+    const model = new TestModelForGetModelId({ modelId: '' })
+
+    const result = getModelId(model)
+
+    expect(result).toBe('TestModelForGetModelId')
+  })
+})
 
 describe('Model', () => {
   describe('streamAggregated', () => {

@@ -399,4 +399,38 @@ export interface Metrics {
    * Latency in milliseconds.
    */
   latencyMs: number
+  /**
+   * Time to first byte in milliseconds.
+   */
+  timeToFirstByteMs?: number
+}
+
+/**
+ * Creates an empty usage object with all counters set to zero.
+ *
+ * @returns A new Usage object with zeroed values
+ */
+export function createEmptyUsage(): Usage {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheWriteInputTokens: 0,
+  }
+}
+
+/**
+ * Accumulates usage from a source into a target usage object.
+ * Mutates the target object in place.
+ *
+ * @param target - The usage object to accumulate into
+ * @param source - The usage data to add
+ */
+export function accumulateUsage(target: Usage, source: Usage): void {
+  target.inputTokens += source.inputTokens
+  target.outputTokens += source.outputTokens
+  target.totalTokens += source.totalTokens
+  target.cacheReadInputTokens = (target.cacheReadInputTokens ?? 0) + (source.cacheReadInputTokens ?? 0)
+  target.cacheWriteInputTokens = (target.cacheWriteInputTokens ?? 0) + (source.cacheWriteInputTokens ?? 0)
 }
