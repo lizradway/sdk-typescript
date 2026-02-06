@@ -276,44 +276,6 @@ export class Agent implements AgentData {
   }
 
   /**
-   * Starts a trace span for the agent invocation.
-   *
-   * @param messages - The input messages
-   * @returns The created span
-   */
-  private _startAgentTraceSpan(messages: Message[]): Span {
-    // Reset accumulated token usage for this invocation
-    this._accumulatedTokenUsage = createEmptyUsage()
-
-    const modelId = getModelId(this.model)
-
-    return this._tracer.startAgentSpan({
-      messages,
-      agentName: this.name,
-      agentId: this.agentId,
-      modelId,
-      tools: this.tools,
-      systemPrompt: this.systemPrompt,
-    })
-  }
-
-  /**
-   * Ends the trace span for the agent invocation.
-   *
-   * @param error - Optional error to record
-   * @param response - Optional response message to record
-   * @param stopReason - Optional stop reason for the response
-   */
-  private _endAgentTraceSpan(error?: Error, response?: Message, stopReason?: string): void {
-    if (!this._traceSpan) return
-
-    const span = this._traceSpan
-    this._traceSpan = undefined
-
-    this._tracer.endAgentSpan(span, response, error, this._accumulatedTokenUsage, stopReason)
-  }
-
-  /**
    * The tools this agent can use.
    */
   get tools(): Tool[] {
@@ -428,7 +390,15 @@ export class Agent implements AgentData {
     const inputMessages = this._normalizeInput(args)
 
     // Start agent trace span
-    this._traceSpan = this._startAgentTraceSpan(inputMessages)
+    this._accumulatedTokenUsage = createEmptyUsage()
+    this._traceSpan = this._tracer.startAgentSpan({
+      messages: inputMessages,
+      agentName: this.name,
+      agentId: this.agentId,
+      modelId: getModelId(this.model),
+      tools: this.tools,
+      systemPrompt: this.systemPrompt,
+    })
 
     try {
       // Execute agent loop - child spans will be linked to agent span via context stack
@@ -437,11 +407,19 @@ export class Agent implements AgentData {
       return result
     } catch (error) {
       // End agent span with error
-      this._endAgentTraceSpan(error as Error, undefined, undefined)
+      if (this._traceSpan) {
+        const span = this._traceSpan
+        this._traceSpan = undefined
+        this._tracer.endAgentSpan(span, undefined, error as Error, this._accumulatedTokenUsage, undefined)
+      }
       throw error
     } finally {
       // End agent span on success (idempotent - won't double-end if catch already ended it)
-      this._endAgentTraceSpan(undefined, result?.lastMessage, result?.stopReason)
+      if (this._traceSpan) {
+        const span = this._traceSpan
+        this._traceSpan = undefined
+        this._tracer.endAgentSpan(span, result?.lastMessage, undefined, this._accumulatedTokenUsage, result?.stopReason)
+      }
       // Always emit final event
       yield new AfterInvocationEvent({ agent: this })
     }
