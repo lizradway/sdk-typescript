@@ -21,6 +21,18 @@ import {
 import { MaxTokensError, ModelError, normalizeError } from '../errors.js'
 
 /**
+ * Extracts the model ID from a model instance.
+ * Falls back to the model's constructor name if modelId is not configured.
+ *
+ * @param model - The model to extract the model ID from
+ * @returns The model ID string
+ */
+export function getModelId(model: Model): string {
+  const modelConfig = model.getConfig()
+  return modelConfig.modelId || model.constructor.name
+}
+
+/**
  * Base configuration interface for all model providers.
  *
  * This interface defines the common configuration properties that all
