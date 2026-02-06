@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import { deepCopy, deepCopyWithValidation } from '../json.js'
 import { JsonValidationError } from '../../errors.js'
 
@@ -378,6 +378,133 @@ describe('deepCopyWithValidation', () => {
       expect(() => deepCopyWithValidation(withFunction)).toThrow(
         'value.func contains a function which cannot be serialized'
       )
+    })
+  })
+})
+
+describe('serialize', () => {
+  // Import serialize dynamically to avoid issues with module loading
+  let serialize: (value: unknown) => string
+
+  beforeAll(async () => {
+    const module = await import('../json.js')
+    serialize = module.serialize
+  })
+
+  describe('primitive values', () => {
+    it('serializes strings', () => {
+      expect(serialize('hello')).toBe('"hello"')
+    })
+
+    it('serializes numbers', () => {
+      expect(serialize(42)).toBe('42')
+    })
+
+    it('serializes booleans', () => {
+      expect(serialize(true)).toBe('true')
+    })
+
+    it('serializes null', () => {
+      expect(serialize(null)).toBe('null')
+    })
+
+    it('serializes undefined', () => {
+      expect(serialize(undefined)).toBe('undefined')
+    })
+  })
+
+  describe('object values', () => {
+    it('serializes simple objects', () => {
+      const obj = { key: 'value', number: 42, bool: true }
+      expect(serialize(obj)).toBe(JSON.stringify(obj))
+    })
+
+    it('serializes arrays', () => {
+      const arr = [1, 2, 3, 'test']
+      expect(serialize(arr)).toBe(JSON.stringify(arr))
+    })
+  })
+
+  describe('special types', () => {
+    it('handles circular references', () => {
+      const obj: Record<string, unknown> = { key: 'value' }
+      obj.self = obj
+      const result = serialize(obj)
+      expect(result).toContain('<replaced>')
+    })
+
+    it('handles Date objects', () => {
+      const date = new Date('2024-01-01T00:00:00.000Z')
+      const result = serialize(date)
+      expect(result).toBe('"2024-01-01T00:00:00.000Z"')
+    })
+
+    it('handles Error objects', () => {
+      const error = new Error('test error')
+      const result = serialize(error)
+      expect(result).toContain('test error')
+      expect(result).toContain('Error')
+    })
+
+    it('handles Map objects', () => {
+      const map = new Map([['key', 'value']])
+      const result = serialize(map)
+      expect(result).toContain('Map')
+    })
+
+    it('handles Set objects', () => {
+      const set = new Set([1, 2, 3])
+      const result = serialize(set)
+      expect(result).toContain('Set')
+    })
+
+    it('handles RegExp objects', () => {
+      const regex = /test/gi
+      const result = serialize(regex)
+      expect(result).toContain('RegExp')
+    })
+
+    it('handles BigInt values', () => {
+      const bigint = BigInt(12345678901234567890n)
+      const result = serialize(bigint)
+      expect(result).toContain('BigInt')
+    })
+
+    it('handles Symbol values', () => {
+      const symbol = Symbol('test')
+      const result = serialize(symbol)
+      expect(result).toContain('Symbol')
+    })
+
+    it('handles Function values', () => {
+      const fn = function testFunction() {}
+      const result = serialize(fn)
+      expect(result).toContain('Function')
+    })
+
+    it('handles objects with toJSON method', () => {
+      const obj = {
+        toJSON: () => ({ serialized: true }),
+      }
+      const result = serialize(obj)
+      expect(result).toContain('serialized')
+    })
+
+    it('handles objects with custom toString', () => {
+      const obj = {
+        toString: () => 'custom string',
+      }
+      const result = serialize(obj)
+      expect(result).toContain('custom string')
+    })
+
+    it('handles deeply nested objects up to max depth', () => {
+      let obj: Record<string, unknown> = { value: 'leaf' }
+      for (let i = 0; i < 60; i++) {
+        obj = { nested: obj }
+      }
+      const result = serialize(obj)
+      expect(result).toContain('max depth reached')
     })
   })
 })
