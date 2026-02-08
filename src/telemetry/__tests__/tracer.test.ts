@@ -921,7 +921,6 @@ describe('Tracer', () => {
         }
 
         const metrics = {
-          timeToFirstByteMs: 250,
           latencyMs: 1000,
         }
 
@@ -1041,7 +1040,6 @@ describe('Tracer', () => {
 
         const metrics = {
           latencyMs: 500,
-          timeToFirstByteMs: 150,
         }
 
         tracer.endModelInvokeSpan(span, { usage, metrics })

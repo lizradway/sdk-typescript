@@ -499,9 +499,6 @@ export class Tracer {
    * Set metrics attributes on an attributes object.
    */
   private _setMetricsAttributes(attributes: Record<string, AttributeValue>, metrics: Metrics): void {
-    if (metrics.timeToFirstByteMs !== undefined && metrics.timeToFirstByteMs > 0) {
-      attributes['gen_ai.server.time_to_first_token'] = metrics.timeToFirstByteMs
-    }
     if (metrics.latencyMs !== undefined && metrics.latencyMs > 0) {
       attributes['gen_ai.server.request.duration'] = metrics.latencyMs
     }
