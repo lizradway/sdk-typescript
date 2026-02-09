@@ -16,6 +16,7 @@ import type { EndModelSpanOptions, StartAgentSpanOptions, Usage, Metrics } from 
 import type { Message, ToolResultBlock } from '../types/messages.js'
 import type { ToolUse } from '../tools/types.js'
 import { serialize } from '../types/json.js'
+import { SERVICE_NAME } from './config.js'
 
 /**
  * Global context stack shared across all Tracer instances.
@@ -71,7 +72,7 @@ export class Tracer {
     this._includeToolDefinitions = optInValues.has('gen_ai_tool_definitions')
 
     // Get tracer from global API to ensure ground truth
-    this._tracer = trace.getTracer('strands-agents')
+    this._tracer = trace.getTracer(SERVICE_NAME)
   }
 
   /**
@@ -412,9 +413,9 @@ export class Tracer {
     }
 
     if (this._useLatestConventions) {
-      attributes['gen_ai.provider.name'] = 'strands-agents'
+      attributes['gen_ai.provider.name'] = SERVICE_NAME
     } else {
-      attributes['gen_ai.system'] = 'strands-agents'
+      attributes['gen_ai.system'] = SERVICE_NAME
     }
 
     return attributes
