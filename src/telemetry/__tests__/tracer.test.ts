@@ -468,7 +468,7 @@ describe('Tracer', () => {
 
       if (span) {
         const error = new Error('Test error')
-        tracer.endAgentSpan(span, undefined, error)
+        tracer.endAgentSpan(span, { error })
       }
     })
 
@@ -586,14 +586,14 @@ describe('Tracer', () => {
       expect(() => {
         if (span) {
           const error = new Error('Simulated error')
-          tracer.endAgentSpan(span, undefined, error)
+          tracer.endAgentSpan(span, { error })
         }
       }).not.toThrow()
     })
 
     it('should handle null spans gracefully without throwing', () => {
       expect(() => {
-        tracer.endAgentSpan(null, undefined, new Error('test'))
+        tracer.endAgentSpan(null, { error: new Error('test') })
         tracer.endModelInvokeSpan(null, { error: new Error('test') })
         tracer.endToolCallSpan(null, undefined, new Error('test'))
       }).not.toThrow()
@@ -675,7 +675,7 @@ describe('Tracer', () => {
       expect(() => {
         // Create and end multiple spans, some with errors
         const span1 = tracer.startAgentSpan({ messages, agentName: 'agent-1' })
-        if (span1) tracer.endAgentSpan(span1, undefined, new Error('error 1'))
+        if (span1) tracer.endAgentSpan(span1, { error: new Error('error 1') })
 
         const span2 = tracer.startModelInvokeSpan(messages)
         if (span2) tracer.endModelInvokeSpan(span2, { error: new Error('error 2') })
@@ -1641,7 +1641,7 @@ describe('Tracer', () => {
 
       if (span) {
         const error = new Error('Agent execution failed')
-        tracer.endAgentSpan(span, undefined, error)
+        tracer.endAgentSpan(span, { error })
       }
     })
   })

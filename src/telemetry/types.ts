@@ -10,6 +10,16 @@ import type { Usage, Metrics } from '../models/streaming.js'
 export type { Usage, Metrics }
 
 /**
+ * Options for ending an agent span.
+ */
+export interface EndAgentSpanOptions {
+  response?: unknown
+  error?: Error
+  accumulatedUsage?: Usage
+  stopReason?: string
+}
+
+/**
  * Options for ending a model invocation span.
  */
 export interface EndModelSpanOptions {

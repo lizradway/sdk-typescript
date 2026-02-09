@@ -12,7 +12,7 @@
 import { context, SpanStatusCode, SpanKind, trace } from '@opentelemetry/api'
 import type { Context, Span, Tracer as OtelTracer, SpanOptions, AttributeValue } from '@opentelemetry/api'
 import { logger } from '../logging/index.js'
-import type { EndModelSpanOptions, StartAgentSpanOptions, Usage, Metrics } from './types.js'
+import type { EndAgentSpanOptions, EndModelSpanOptions, StartAgentSpanOptions, Usage, Metrics } from './types.js'
 import type { Message, ToolResultBlock } from '../types/messages.js'
 import type { ToolUse } from '../tools/types.js'
 import { serialize } from '../types/json.js'
@@ -50,9 +50,39 @@ function parseSemconvOptIn(): Set<string> {
  * The Agent creates its own Tracer internally with custom trace attributes.
  */
 export class Tracer {
+  /**
+   * OpenTelemetry tracer instance obtained from the global API.
+   */
   private readonly _tracer: OtelTracer
+
+  /**
+   * Whether to use latest experimental semantic conventions.
+   *
+   * Enabled via `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental`.
+   * Changes attribute names (e.g., `gen_ai.system` → `gen_ai.provider.name`) and
+   * event formats (single `gen_ai.client.inference.operation.details` event vs
+   * separate per-message events). Enable when your observability backend supports
+   * newer GenAI conventions.
+   *
+   * @see https://opentelemetry.io/docs/specs/semconv/gen-ai/
+   */
   private readonly _useLatestConventions: boolean
+
+  /**
+   * Whether to include full tool JSON schemas in span attributes.
+   *
+   * Enabled via `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_tool_definitions`.
+   * Useful for debugging tool configuration issues. Disabled by default to
+   * reduce span payload size and observability costs.
+   *
+   * Can be combined with other options:
+   * `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental,gen_ai_tool_definitions`
+   */
   private readonly _includeToolDefinitions: boolean
+
+  /**
+   * Custom attributes to include on all spans created by this tracer.
+   */
   private readonly _traceAttributes: Record<string, AttributeValue>
 
   /**
@@ -126,21 +156,17 @@ export class Tracer {
   /**
    * End an agent invocation span.
    */
-  endAgentSpan(
-    span: Span | null,
-    response?: unknown,
-    error?: Error,
-    accumulatedUsage?: Usage,
-    stopReason?: string
-  ): void {
+  endAgentSpan(span: Span | null, options: EndAgentSpanOptions = {}): void {
     if (!span) return
+
+    const { response, error, accumulatedUsage, stopReason } = options
 
     try {
       const attributes: Record<string, AttributeValue> = {}
       if (accumulatedUsage) this._setUsageAttributes(attributes, accumulatedUsage)
       if (response !== undefined && response !== null) this._addResponseEvent(span, response, stopReason)
 
-      this._closeSpan(span, attributes, error)
+      this._endSpan(span, attributes, error)
     } catch (err) {
       logger.warn(`error=<${err}> | failed to end agent span`)
     }
@@ -181,7 +207,7 @@ export class Tracer {
         if (metrics) this._setMetricsAttributes(attributes, metrics)
       }
 
-      this._closeSpan(span, attributes, error)
+      this._endSpan(span, attributes, error)
     } catch (err) {
       logger.warn(`error=<${err}> | failed to end model invoke span`)
     }
@@ -252,7 +278,7 @@ export class Tracer {
         }
       }
 
-      this._closeSpan(span, attributes, error)
+      this._endSpan(span, attributes, error)
     } catch (err) {
       logger.warn(`error=<${err}> | failed to end tool call span`)
     }
@@ -278,7 +304,7 @@ export class Tracer {
    */
   endAgentLoopSpan(span: Span, error?: Error): void {
     try {
-      this._closeSpan(span, {}, error)
+      this._endSpan(span, {}, error)
     } catch (err) {
       logger.warn(`error=<${err}> | failed to end agent loop cycle span`)
     }
@@ -344,10 +370,10 @@ export class Tracer {
   }
 
   /**
-   * Close a span with the given attributes and optional error.
+   * End a span with the given attributes and optional error.
    * Pops the context from the stack.
    */
-  private _closeSpan(span: Span, attributes?: Record<string, AttributeValue>, error?: Error): void {
+  private _endSpan(span: Span, attributes?: Record<string, AttributeValue>, error?: Error): void {
     try {
       const endAttributes: Record<string, AttributeValue> = { 'gen_ai.event.end_time': new Date().toISOString() }
       if (attributes) Object.assign(endAttributes, attributes)
