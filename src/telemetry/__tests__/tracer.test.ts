@@ -2314,7 +2314,7 @@ describe('Additional Tracer Coverage', () => {
           ],
         }
 
-        tracer.endAgentSpan(span, response, undefined, undefined, 'end_turn')
+        tracer.endAgentSpan(span, { response, stopReason: 'end_turn' })
       }
     })
 
@@ -2330,7 +2330,7 @@ describe('Additional Tracer Coverage', () => {
       expect(span).toBeDefined()
 
       if (span) {
-        tracer.endAgentSpan(span, 'Simple string response', undefined, undefined, 'end_turn')
+        tracer.endAgentSpan(span, { response: 'Simple string response', stopReason: 'end_turn' })
       }
     })
 
@@ -2354,7 +2354,7 @@ describe('Additional Tracer Coverage', () => {
           cacheWriteInputTokens: 25,
         }
 
-        tracer.endAgentSpan(span, undefined, undefined, usage, 'end_turn')
+        tracer.endAgentSpan(span, { accumulatedUsage: usage, stopReason: 'end_turn' })
       }
     })
 
@@ -2380,7 +2380,7 @@ describe('Additional Tracer Coverage', () => {
             content: [{ type: 'textBlock', text: 'Response' }],
           }
 
-          latestTracer.endAgentSpan(span, response, undefined, undefined, 'end_turn')
+          latestTracer.endAgentSpan(span, { response, stopReason: 'end_turn' })
         }
       } finally {
         process.env.OTEL_SEMCONV_STABILITY_OPT_IN = originalEnv

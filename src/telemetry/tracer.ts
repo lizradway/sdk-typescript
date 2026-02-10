@@ -109,7 +109,7 @@ export class Tracer {
    * Start an agent invocation span as the active span.
    * Child spans will automatically parent to this span.
    */
-  startAgentSpan(options: StartAgentSpanOptions): Span {
+  startAgentSpan(options: StartAgentSpanOptions): Span | null {
     const { messages, agentName, agentId, modelId, tools, traceAttributes, toolsConfig, systemPrompt } = options
 
     try {
@@ -122,26 +122,18 @@ export class Tracer {
 
       if (tools && tools.length > 0) {
         const toolNames = tools.map((t) => this._extractToolName(t))
-        attributes['gen_ai.agent.tools'] = serialize(toolNames)
+        setSerializedAttr(attributes, 'gen_ai.agent.tools', toolNames)
       }
 
       if (this._includeToolDefinitions && toolsConfig) {
-        try {
-          attributes['gen_ai.tool.definitions'] = serialize(toolsConfig)
-        } catch (error) {
-          logger.warn(`error=<${error}> | failed to serialize tool definitions`)
-        }
+        setSerializedAttr(attributes, 'gen_ai.tool.definitions', toolsConfig)
       }
 
       if (systemPrompt !== undefined) {
-        try {
-          attributes['system_prompt'] = serialize(systemPrompt)
-        } catch (error) {
-          logger.warn(`error=<${error}> | failed to serialize system prompt`)
-        }
+        setSerializedAttr(attributes, 'system_prompt', systemPrompt)
       }
 
-      const mergedAttributes = this._mergeAttributes(attributes, traceAttributes)
+      const mergedAttributes = { ...attributes, ...this._traceAttributes, ...traceAttributes }
       const span = this._startSpan(spanName, mergedAttributes, SpanKind.INTERNAL)
 
       this._addEventMessages(span, messages)
@@ -149,7 +141,7 @@ export class Tracer {
       return span
     } catch (error) {
       logger.warn(`error=<${error}> | failed to start agent span`)
-      throw error
+      return null
     }
   }
 
@@ -175,7 +167,7 @@ export class Tracer {
   /**
    * Start a model invocation span as the active span.
    */
-  startModelInvokeSpan(messages: Message[], modelId?: string): Span {
+  startModelInvokeSpan(messages: Message[], modelId?: string): Span | null {
     try {
       const attributes = this._getCommonAttributes('chat')
       if (modelId) attributes['gen_ai.request.model'] = modelId
@@ -186,7 +178,7 @@ export class Tracer {
       return span
     } catch (error) {
       logger.warn(`error=<${error}> | failed to start model invoke span`)
-      throw error
+      return null
     }
   }
 
@@ -216,7 +208,7 @@ export class Tracer {
   /**
    * Start a tool call span as the active span.
    */
-  startToolCallSpan(tool: ToolUse): Span {
+  startToolCallSpan(tool: ToolUse): Span | null {
     try {
       const attributes = this._getCommonAttributes('execute_tool')
       attributes['gen_ai.tool.name'] = tool.name
@@ -244,7 +236,7 @@ export class Tracer {
       return span
     } catch (error) {
       logger.warn(`error=<${error}> | failed to start tool call span`)
-      throw error
+      return null
     }
   }
 
@@ -287,7 +279,7 @@ export class Tracer {
   /**
    * Start an agent loop cycle span as the active span.
    */
-  startAgentLoopSpan(cycleId: string, messages: Message[]): Span {
+  startAgentLoopSpan(cycleId: string, messages: Message[]): Span | null {
     try {
       const attributes: Record<string, AttributeValue> = { 'agent_loop.cycle_id': cycleId }
       const span = this._startSpan('execute_agent_loop_cycle', attributes)
@@ -295,7 +287,7 @@ export class Tracer {
       return span
     } catch (error) {
       logger.warn(`error=<${error}> | failed to start agent loop cycle span`)
-      throw error
+      return null
     }
   }
 
@@ -445,19 +437,6 @@ export class Tracer {
     }
 
     return attributes
-  }
-
-  /**
-   * Merge custom attributes with standard attributes.
-   * Includes instance-level traceAttributes set at construction time.
-   */
-  private _mergeAttributes(
-    standardAttributes: Record<string, AttributeValue>,
-    customAttributes?: Record<string, AttributeValue>
-  ): Record<string, AttributeValue> {
-    const merged = { ...standardAttributes, ...this._traceAttributes }
-    if (customAttributes) Object.assign(merged, customAttributes)
-    return merged
   }
 
   /**
@@ -624,34 +603,43 @@ export class Tracer {
 }
 
 /**
+ * Safely set a JSON-serialized attribute on an attributes object.
+ * Catches serialization errors and logs a warning instead of throwing.
+ */
+function setSerializedAttr(attrs: Record<string, AttributeValue>, key: string, value: unknown): void {
+  try {
+    attrs[key] = serialize(value)
+  } catch {
+    logger.warn(`key=<${key}> | failed to serialize attribute`)
+  }
+}
+
+/**
  * Map content blocks to OTEL parts format (latest conventions).
  * Converts SDK content block types to OTEL semantic convention format.
  */
 function mapContentBlocksToOtelParts(contentBlocks: unknown[]): Record<string, unknown>[] {
-  try {
-    return contentBlocks.map((block) => {
-      if (!block || typeof block !== 'object') {
-        return { type: 'unknown' }
-      }
+  if (!Array.isArray(contentBlocks)) return []
 
-      const blockObj = block as Record<string, unknown>
+  return contentBlocks.map((block) => {
+    if (!block || typeof block !== 'object') {
+      return { type: 'unknown' }
+    }
 
-      if (blockObj.type === 'textBlock') {
-        return { type: 'text', content: blockObj.text }
-      } else if (blockObj.type === 'toolUseBlock') {
-        return { type: 'tool_call', name: blockObj.name, id: blockObj.toolUseId, arguments: blockObj.input }
-      } else if (blockObj.type === 'toolResultBlock') {
-        return { type: 'tool_call_response', id: blockObj.toolUseId, response: blockObj.content }
-      } else if (blockObj.type === 'interruptResponseBlock') {
-        return { type: 'interrupt_response', id: blockObj.interruptId, response: blockObj.response }
-      }
+    const blockObj = block as Record<string, unknown>
 
-      return blockObj as Record<string, unknown>
-    })
-  } catch (err) {
-    logger.warn(`error=<${err}> | failed to map content blocks`)
-    return []
-  }
+    if (blockObj.type === 'textBlock') {
+      return { type: 'text', content: blockObj.text }
+    } else if (blockObj.type === 'toolUseBlock') {
+      return { type: 'tool_call', name: blockObj.name, id: blockObj.toolUseId, arguments: blockObj.input }
+    } else if (blockObj.type === 'toolResultBlock') {
+      return { type: 'tool_call_response', id: blockObj.toolUseId, response: blockObj.content }
+    } else if (blockObj.type === 'interruptResponseBlock') {
+      return { type: 'interrupt_response', id: blockObj.interruptId, response: blockObj.response }
+    }
+
+    return blockObj as Record<string, unknown>
+  })
 }
 
 /**
