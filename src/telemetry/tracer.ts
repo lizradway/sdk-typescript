@@ -4,13 +4,30 @@
  * This module provides tracing capabilities using OpenTelemetry,
  * enabling trace data to be sent to OTLP endpoints.
  *
- * Maintains a manual context stack for proper parent-child span relationships
- * across async generator boundaries (OpenTelemetry's async local storage
- * doesn't persist across yields).
+ * Uses a fully stateful approach via OpenTelemetry's context propagation.
+ * Parent-child relationships are established automatically through
+ * context.active(). Use context.with() to set a span as active before
+ * creating child spans.
+ *
+ * @example
+ * ```typescript
+ * const tracer = new Tracer()
+ * const parentSpan = tracer.startAgentSpan({ ... })
+ *
+ * // Run code with parentSpan as active context
+ * await context.with(trace.setSpan(context.active(), parentSpan), async () => {
+ *   // Child spans automatically parent to parentSpan
+ *   const childSpan = tracer.startModelInvokeSpan(messages)
+ *   // ...
+ *   tracer.endModelInvokeSpan(childSpan)
+ * })
+ *
+ * tracer.endAgentSpan(parentSpan)
+ * ```
  */
 
 import { context, SpanStatusCode, SpanKind, trace } from '@opentelemetry/api'
-import type { Context, Span, Tracer as OtelTracer, SpanOptions, AttributeValue } from '@opentelemetry/api'
+import type { Span, Tracer as OtelTracer, SpanOptions, AttributeValue } from '@opentelemetry/api'
 import { logger } from '../logging/index.js'
 import type { EndAgentSpanOptions, EndModelSpanOptions, StartAgentSpanOptions, Usage, Metrics } from './types.js'
 import type { Message, ToolResultBlock } from '../types/messages.js'
@@ -19,13 +36,14 @@ import { serialize } from '../types/json.js'
 import { SERVICE_NAME } from './config.js'
 
 /**
- * Global context stack shared across all Tracer instances.
- * This ensures proper parent-child relationships when spans are created
- * from different Tracer instances across async generator boundaries.
- * OpenTelemetry's async local storage doesn't persist across yields,
- * so we maintain our own stack.
+ * Get a Tracer instance for creating agent-specific spans.
+ *
+ * @param traceAttributes - Optional custom attributes to include on all spans
+ * @returns A Tracer instance
  */
-let _globalContextStack: Context[] = []
+export function getTracer(traceAttributes?: Record<string, AttributeValue>): Tracer {
+  return new Tracer(traceAttributes)
+}
 
 /**
  * Parse the OTEL_SEMCONV_STABILITY_OPT_IN environment variable.
@@ -43,11 +61,17 @@ function parseSemconvOptIn(): Set<string> {
 /**
  * Tracer manages OpenTelemetry spans for agent operations.
  *
- * Maintains a context stack to ensure proper parent-child relationships
- * between spans across async generator boundaries. OpenTelemetry's async
- * local storage doesn't persist across yields, so we maintain our own stack.
+ * Uses a fully stateful approach via OpenTelemetry's context propagation.
+ * The current span can be retrieved via getCurrentSpan(). Parent-child
+ * relationships are established automatically through context.active().
  *
- * The Agent creates its own Tracer internally with custom trace attributes.
+ * To create nested spans, use context.with() to set the parent span as active:
+ * ```typescript
+ * const parent = tracer.startAgentSpan({ ... })
+ * context.with(trace.setSpan(context.active(), parent), () => {
+ *   const child = tracer.startModelInvokeSpan(messages) // auto-parents to parent
+ * })
+ * ```
  */
 export class Tracer {
   /**
@@ -106,8 +130,19 @@ export class Tracer {
   }
 
   /**
-   * Start an agent invocation span as the active span.
-   * Child spans will automatically parent to this span.
+   * Get the current active span from OpenTelemetry context.
+   * Returns undefined if no span is active.
+   */
+  getCurrentSpan(): Span | undefined {
+    return trace.getSpan(context.active())
+  }
+
+  /**
+   * Start an agent invocation span.
+   * Returns the span which should be ended with endAgentSpan.
+   * Parents to the current active span from context.active().
+   *
+   * @param options - Options for starting the agent span
    */
   startAgentSpan(options: StartAgentSpanOptions): Span | null {
     const { messages, agentName, agentId, modelId, tools, traceAttributes, toolsConfig, systemPrompt } = options
@@ -165,7 +200,11 @@ export class Tracer {
   }
 
   /**
-   * Start a model invocation span as the active span.
+   * Start a model invocation span.
+   * Parents to the current active span from context.active().
+   *
+   * @param messages - Messages being sent to the model
+   * @param modelId - Optional model identifier
    */
   startModelInvokeSpan(messages: Message[], modelId?: string): Span | null {
     try {
@@ -206,7 +245,10 @@ export class Tracer {
   }
 
   /**
-   * Start a tool call span as the active span.
+   * Start a tool call span.
+   * Parents to the current active span from context.active().
+   *
+   * @param tool - Tool use information
    */
   startToolCallSpan(tool: ToolUse): Span | null {
     try {
@@ -277,7 +319,11 @@ export class Tracer {
   }
 
   /**
-   * Start an agent loop cycle span as the active span.
+   * Start an agent loop cycle span.
+   * Parents to the current active span from context.active().
+   *
+   * @param cycleId - Unique identifier for this cycle
+   * @param messages - Messages at the start of this cycle
    */
   startAgentLoopSpan(cycleId: string, messages: Message[]): Span | null {
     try {
@@ -294,7 +340,8 @@ export class Tracer {
   /**
    * End an agent loop cycle span.
    */
-  endAgentLoopSpan(span: Span, error?: Error): void {
+  endAgentLoopSpan(span: Span | null, error?: Error): void {
+    if (!span) return
     try {
       this._endSpan(span, {}, error)
     } catch (err) {
@@ -303,33 +350,7 @@ export class Tracer {
   }
 
   /**
-   * Get the current context for span creation.
-   * Returns the top of our context stack, or falls back to the active OpenTelemetry context.
-   */
-  private _getCurrentContext(): Context {
-    return _globalContextStack.at(-1) ?? context.active()
-  }
-
-  /**
-   * Push a new context onto the stack.
-   */
-  private _pushContext(ctx: Context): void {
-    _globalContextStack.push(ctx)
-  }
-
-  /**
-   * Pop a context from the stack.
-   */
-  private _popContext(): void {
-    _globalContextStack.pop()
-  }
-
-  /**
-   * Create a span and push its context onto the stack.
-   * Child spans will automatically parent to this span.
-   *
-   * For async generators, call the corresponding endXxxSpan() method
-   * to close the span and pop the context.
+   * Create a span parented to the current active context.
    */
   private _startSpan(spanName: string, attributes?: Record<string, AttributeValue>, spanKind?: SpanKind): Span {
     const options: SpanOptions = {}
@@ -344,9 +365,7 @@ export class Tracer {
 
     if (spanKind !== undefined) options.kind = spanKind
 
-    // Create span with current context from our stack
-    const parentContext = this._getCurrentContext()
-    const span = this._tracer.startSpan(spanName, options, parentContext)
+    const span = this._tracer.startSpan(spanName, options, context.active())
 
     try {
       span.setAttribute('gen_ai.event.start_time', new Date().toISOString())
@@ -354,16 +373,11 @@ export class Tracer {
       logger.warn(`error=<${err}> | failed to set start time attribute`)
     }
 
-    // Push the new span's context onto our stack
-    const spanContext = trace.setSpan(parentContext, span)
-    this._pushContext(spanContext)
-
     return span
   }
 
   /**
    * End a span with the given attributes and optional error.
-   * Pops the context from the stack.
    */
   private _endSpan(span: Span, attributes?: Record<string, AttributeValue>, error?: Error): void {
     try {
@@ -380,8 +394,8 @@ export class Tracer {
       }
 
       span.end()
-    } finally {
-      this._popContext()
+    } catch (err) {
+      logger.warn(`error=<${err}> | failed to end span`)
     }
   }
 
@@ -618,7 +632,7 @@ function setSerializedAttr(attrs: Record<string, AttributeValue>, key: string, v
  * Map content blocks to OTEL parts format (latest conventions).
  * Converts SDK content block types to OTEL semantic convention format.
  */
-function mapContentBlocksToOtelParts(contentBlocks: unknown[]): Record<string, unknown>[] {
+export function mapContentBlocksToOtelParts(contentBlocks: unknown[]): Record<string, unknown>[] {
   if (!Array.isArray(contentBlocks)) return []
 
   return contentBlocks.map((block) => {
