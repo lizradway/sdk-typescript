@@ -49,8 +49,7 @@ import { getServiceName } from './config.js'
  * Tracer manages OpenTelemetry spans for agent operations.
  *
  * Uses a fully stateful approach via OpenTelemetry's context propagation.
- * The current span can be retrieved via getCurrentSpan(). Parent-child
- * relationships are established automatically through context.active().
+ * Parent-child relationships are established automatically through context.active().
  *
  * To create nested spans, use context.with() to set the parent span as active:
  * ```typescript
@@ -114,14 +113,6 @@ export class Tracer {
 
     // Get tracer from global API to ensure ground truth
     this._tracer = trace.getTracer(getServiceName())
-  }
-
-  /**
-   * Get the current active span from OpenTelemetry context.
-   * Returns undefined if no span is active.
-   */
-  getCurrentSpan(): Span | undefined {
-    return trace.getSpan(context.active())
   }
 
   /**
