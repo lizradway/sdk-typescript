@@ -172,6 +172,9 @@ export class Tracer {
 
   /**
    * End an agent invocation span.
+   *
+   * @param span - The span to end, or null if span creation failed
+   * @param options - Options for ending the span including response, error, and usage data
    */
   endAgentSpan(span: Span | null, options: EndAgentSpanOptions = {}): void {
     if (!span) return
@@ -213,6 +216,9 @@ export class Tracer {
 
   /**
    * End a model invocation span.
+   *
+   * @param span - The span to end, or null if span creation failed
+   * @param options - Options for ending the span including usage, metrics, error, and output
    */
   endModelInvokeSpan(span: Span | null, options: EndModelSpanOptions = {}): void {
     if (!span) return
@@ -274,6 +280,10 @@ export class Tracer {
 
   /**
    * End a tool call span.
+   *
+   * @param span - The span to end, or null if span creation failed
+   * @param toolResult - The result of the tool execution
+   * @param error - Error if the tool call failed
    */
   endToolCallSpan(span: Span | null, toolResult?: ToolResultBlock, error?: Error): void {
     if (!span) return
@@ -329,6 +339,9 @@ export class Tracer {
 
   /**
    * End an agent loop cycle span.
+   *
+   * @param span - The span to end, or null if span creation failed
+   * @param error - Error if the cycle failed
    */
   endAgentLoopSpan(span: Span | null, error?: Error): void {
     if (!span) return
@@ -610,7 +623,7 @@ export class Tracer {
  * Map content blocks to OTEL parts format (latest conventions).
  * Converts SDK content block types to OTEL semantic convention format.
  */
-export function mapContentBlocksToOtelParts(contentBlocks: unknown[]): Record<string, unknown>[] {
+function mapContentBlocksToOtelParts(contentBlocks: unknown[]): Record<string, unknown>[] {
   if (!Array.isArray(contentBlocks)) return []
 
   return contentBlocks.map((block) => {
