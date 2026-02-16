@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Tracer } from '../tracer.js'
-import { serialize } from '../../types/json.js'
 import { Message, TextBlock, ToolResultBlock } from '../../types/messages.js'
 
 describe('Tracer', () => {
@@ -185,7 +184,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages, 'model-123')
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
       expect(span).toBeDefined()
 
       if (span) {
@@ -200,7 +199,7 @@ describe('Tracer', () => {
         input: { key: 'value' },
       }
 
-      const span = tracer.startToolCallSpan(toolUse)
+      const span = tracer.startToolCallSpan({ tool: toolUse })
       expect(span).toBeDefined()
 
       if (span) {
@@ -216,7 +215,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startAgentLoopSpan('cycle-123', messages)
+      const span = tracer.startAgentLoopSpan({ cycleId: 'cycle-123', messages })
       expect(span).toBeDefined()
 
       if (span) {
@@ -234,7 +233,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages, 'model-123')
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
       expect(span).toBeDefined()
 
       if (span) {
@@ -260,7 +259,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages)
+      const span = tracer.startModelInvokeSpan({ messages })
       expect(span).toBeDefined()
 
       if (span) {
@@ -275,44 +274,6 @@ describe('Tracer', () => {
         tracer.endModelInvokeSpan(null)
         tracer.endToolCallSpan(null)
       }).not.toThrow()
-    })
-  })
-
-  describe('serialization', () => {
-    it('should serialize simple objects', () => {
-      const obj = { key: 'value', number: 42, bool: true }
-      const result = serialize(obj)
-      expect(result).toBe(JSON.stringify(obj))
-    })
-
-    it('should serialize arrays', () => {
-      const arr = [1, 2, 3, 'test']
-      const result = serialize(arr)
-      expect(result).toBe(JSON.stringify(arr))
-    })
-
-    it('should handle circular references by returning empty object', () => {
-      const obj: Record<string, unknown> = { key: 'value' }
-      obj.self = obj
-      const result = serialize(obj)
-      expect(result).toBe('{}')
-    })
-
-    it('should serialize Error objects as empty object', () => {
-      const error = new Error('Test error')
-      const result = serialize(error)
-      expect(result).toBe('{}')
-    })
-
-    it('should handle Date objects', () => {
-      const date = new Date('2025-01-01T00:00:00Z')
-      const result = serialize(date)
-      expect(result).toContain('2025-01-01')
-    })
-
-    it('should handle null and undefined', () => {
-      expect(serialize(null)).toBe('null')
-      expect(serialize(undefined)).toBe('undefined')
     })
   })
 
@@ -399,7 +360,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages, 'model-123')
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
       expect(span).toBeDefined()
 
       if (span) {
@@ -424,7 +385,7 @@ describe('Tracer', () => {
         input: { key: 'value' },
       }
 
-      const span = tracer.startToolCallSpan(toolUse)
+      const span = tracer.startToolCallSpan({ tool: toolUse })
       expect(span).toBeDefined()
 
       if (span) {
@@ -434,7 +395,7 @@ describe('Tracer', () => {
           content: [new TextBlock('success')],
         })
 
-        tracer.endToolCallSpan(span, toolResult)
+        tracer.endToolCallSpan(span, { toolResult })
       }
     })
 
@@ -446,7 +407,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startAgentLoopSpan('cycle-123', messages)
+      const span = tracer.startAgentLoopSpan({ cycleId: 'cycle-123', messages })
       expect(span).toBeDefined()
 
       if (span) {
@@ -485,17 +446,17 @@ describe('Tracer', () => {
       if (agentSpan) tracer.endAgentSpan(agentSpan)
 
       // Test model span
-      const modelSpan = tracer.startModelInvokeSpan(messages)
+      const modelSpan = tracer.startModelInvokeSpan({ messages })
       expect(modelSpan).toBeDefined()
       if (modelSpan) tracer.endModelInvokeSpan(modelSpan)
 
       // Test tool span
-      const toolSpan = tracer.startToolCallSpan({ name: 'tool', toolUseId: 'id', input: {} })
+      const toolSpan = tracer.startToolCallSpan({ tool: { name: 'tool', toolUseId: 'id', input: {} } })
       expect(toolSpan).toBeDefined()
       if (toolSpan) tracer.endToolCallSpan(toolSpan)
 
       // Test cycle span
-      const cycleSpan = tracer.startAgentLoopSpan('cycle', messages)
+      const cycleSpan = tracer.startAgentLoopSpan({ cycleId: 'cycle', messages })
       expect(cycleSpan).toBeDefined()
       if (cycleSpan) tracer.endAgentLoopSpan(cycleSpan)
     })
@@ -538,7 +499,7 @@ describe('Tracer', () => {
 
       if (parentSpan) {
         // Create child span - automatically parents to the active span
-        const childSpan = tracer.startModelInvokeSpan(messages, 'model-123')
+        const childSpan = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
         expect(childSpan).toBeDefined()
 
         if (childSpan) {
@@ -566,9 +527,9 @@ describe('Tracer', () => {
         // Try to start spans with various invalid inputs
         tracer.startAgentSpan({ messages: [], agentName: '' }) // empty agent name
         tracer.startAgentSpan({ messages: [], agentName: 'agent', traceAttributes: {} }) // empty custom attributes
-        tracer.startModelInvokeSpan([])
-        tracer.startToolCallSpan({ name: '', toolUseId: '', input: {} })
-        tracer.startAgentLoopSpan('', [])
+        tracer.startModelInvokeSpan({ messages: [] })
+        tracer.startToolCallSpan({ tool: { name: '', toolUseId: '', input: {} } })
+        tracer.startAgentLoopSpan({ cycleId: '', messages: [] })
       }).not.toThrow()
     })
 
@@ -594,7 +555,7 @@ describe('Tracer', () => {
       expect(() => {
         tracer.endAgentSpan(null, { error: new Error('test') })
         tracer.endModelInvokeSpan(null, { error: new Error('test') })
-        tracer.endToolCallSpan(null, undefined, new Error('test'))
+        tracer.endToolCallSpan(null, { error: new Error('test') })
       }).not.toThrow()
     })
 
@@ -676,14 +637,14 @@ describe('Tracer', () => {
         const span1 = tracer.startAgentSpan({ messages, agentName: 'agent-1' })
         if (span1) tracer.endAgentSpan(span1, { error: new Error('error 1') })
 
-        const span2 = tracer.startModelInvokeSpan(messages)
+        const span2 = tracer.startModelInvokeSpan({ messages })
         if (span2) tracer.endModelInvokeSpan(span2, { error: new Error('error 2') })
 
-        const span3 = tracer.startToolCallSpan({ name: 'tool', toolUseId: 'id', input: {} })
-        if (span3) tracer.endToolCallSpan(span3, undefined, new Error('error 3'))
+        const span3 = tracer.startToolCallSpan({ tool: { name: 'tool', toolUseId: 'id', input: {} } })
+        if (span3) tracer.endToolCallSpan(span3, { error: new Error('error 3') })
 
-        const span4 = tracer.startAgentLoopSpan('cycle', messages)
-        if (span4) tracer.endAgentLoopSpan(span4, new Error('error 4'))
+        const span4 = tracer.startAgentLoopSpan({ cycleId: 'cycle', messages })
+        if (span4) tracer.endAgentLoopSpan(span4, { error: new Error('error 4') })
       }).not.toThrow()
     })
 
@@ -725,7 +686,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages, 'model-123')
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
       expect(span).toBeDefined()
 
       if (span) {
@@ -751,7 +712,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages, 'model-123')
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
       expect(span).toBeDefined()
 
       if (span) {
@@ -767,7 +728,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages, 'model-456')
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-456' })
       expect(span).toBeDefined()
 
       if (span) {
@@ -795,7 +756,7 @@ describe('Tracer', () => {
 
       if (parentSpan) {
         // Create child model span
-        const modelSpan = tracer.startModelInvokeSpan(messages, 'model-123')
+        const modelSpan = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
         expect(modelSpan).toBeDefined()
 
         if (modelSpan) {
@@ -821,7 +782,7 @@ describe('Tracer', () => {
       ]
 
       // Create first model span
-      const span1 = tracer.startModelInvokeSpan(messages, 'model-123')
+      const span1 = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
       expect(span1).toBeDefined()
 
       if (span1) {
@@ -835,7 +796,7 @@ describe('Tracer', () => {
       }
 
       // Create second model span
-      const span2 = tracer.startModelInvokeSpan(messages, 'model-456')
+      const span2 = tracer.startModelInvokeSpan({ messages, modelId: 'model-456' })
       expect(span2).toBeDefined()
 
       if (span2) {
@@ -859,7 +820,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages, 'model-123')
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
       expect(span).toBeDefined()
 
       if (span) {
@@ -885,7 +846,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages, 'model-123')
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
       expect(span).toBeDefined()
 
       if (span) {
@@ -909,7 +870,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages, 'model-123')
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
       expect(span).toBeDefined()
 
       if (span) {
@@ -935,7 +896,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages, 'model-123')
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
       expect(span).toBeDefined()
 
       if (span) {
@@ -957,7 +918,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages, 'model-123')
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
       expect(span).toBeDefined()
 
       if (span) {
@@ -979,7 +940,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages, 'model-123')
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
       expect(span).toBeDefined()
 
       if (span) {
@@ -1002,7 +963,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages, 'model-123')
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
       expect(span).toBeDefined()
 
       if (span) {
@@ -1025,7 +986,7 @@ describe('Tracer', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages, 'model-123')
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
       expect(span).toBeDefined()
 
       if (span) {
@@ -1054,7 +1015,7 @@ describe('Tracer', () => {
         input: { operation: 'add', a: 5, b: 3 },
       }
 
-      const span = tracer.startToolCallSpan(toolUse)
+      const span = tracer.startToolCallSpan({ tool: toolUse })
       expect(span).toBeDefined()
 
       if (span) {
@@ -1064,7 +1025,7 @@ describe('Tracer', () => {
           content: [new TextBlock('8')],
         })
 
-        tracer.endToolCallSpan(span, toolResult)
+        tracer.endToolCallSpan(span, { toolResult })
       }
     })
 
@@ -1088,7 +1049,7 @@ describe('Tracer', () => {
       ]
 
       for (const tool of tools) {
-        const span = tracer.startToolCallSpan(tool)
+        const span = tracer.startToolCallSpan({ tool })
         expect(span).toBeDefined()
 
         if (span) {
@@ -1098,7 +1059,7 @@ describe('Tracer', () => {
             content: [new TextBlock('result')],
           })
 
-          tracer.endToolCallSpan(span, toolResult)
+          tracer.endToolCallSpan(span, { toolResult })
         }
       }
     })
@@ -1110,7 +1071,7 @@ describe('Tracer', () => {
         input: { sql: 'SELECT * FROM users' },
       }
 
-      const span = tracer.startToolCallSpan(toolUse)
+      const span = tracer.startToolCallSpan({ tool: toolUse })
       expect(span).toBeDefined()
 
       if (span) {
@@ -1120,7 +1081,7 @@ describe('Tracer', () => {
           content: [new TextBlock('42 rows')],
         })
 
-        tracer.endToolCallSpan(span, toolResult)
+        tracer.endToolCallSpan(span, { toolResult })
       }
     })
 
@@ -1144,7 +1105,7 @@ describe('Tracer', () => {
           input: { operation: 'multiply', x: 6, y: 7 },
         }
 
-        const toolSpan = tracer.startToolCallSpan(toolUse)
+        const toolSpan = tracer.startToolCallSpan({ tool: toolUse })
         expect(toolSpan).toBeDefined()
 
         if (toolSpan) {
@@ -1154,7 +1115,7 @@ describe('Tracer', () => {
             content: [new TextBlock('42')],
           })
 
-          tracer.endToolCallSpan(toolSpan, toolResult)
+          tracer.endToolCallSpan(toolSpan, { toolResult })
         }
 
         tracer.endAgentSpan(parentSpan)
@@ -1176,7 +1137,7 @@ describe('Tracer', () => {
       ]
 
       // Create first tool call span
-      const span1 = tracer.startToolCallSpan(tools[0]!)
+      const span1 = tracer.startToolCallSpan({ tool: tools[0]! })
       expect(span1).toBeDefined()
 
       if (span1) {
@@ -1186,11 +1147,11 @@ describe('Tracer', () => {
           content: [new TextBlock('result-a')],
         })
 
-        tracer.endToolCallSpan(span1, toolResult1)
+        tracer.endToolCallSpan(span1, { toolResult: toolResult1 })
       }
 
       // Create second tool call span
-      const span2 = tracer.startToolCallSpan(tools[1]!)
+      const span2 = tracer.startToolCallSpan({ tool: tools[1]! })
       expect(span2).toBeDefined()
 
       if (span2) {
@@ -1200,7 +1161,7 @@ describe('Tracer', () => {
           content: [new TextBlock('result-b')],
         })
 
-        tracer.endToolCallSpan(span2, toolResult2)
+        tracer.endToolCallSpan(span2, { toolResult: toolResult2 })
       }
     })
 
@@ -1211,7 +1172,7 @@ describe('Tracer', () => {
         input: { test: 'data' },
       }
 
-      const span = tracer.startToolCallSpan(toolUse)
+      const span = tracer.startToolCallSpan({ tool: toolUse })
       expect(span).toBeDefined()
 
       if (span) {
@@ -1221,7 +1182,7 @@ describe('Tracer', () => {
           content: [new TextBlock('Tool execution failed')],
         })
 
-        tracer.endToolCallSpan(span, toolResult)
+        tracer.endToolCallSpan(span, { toolResult })
       }
     })
 
@@ -1232,12 +1193,12 @@ describe('Tracer', () => {
         input: { test: 'data' },
       }
 
-      const span = tracer.startToolCallSpan(toolUse)
+      const span = tracer.startToolCallSpan({ tool: toolUse })
       expect(span).toBeDefined()
 
       if (span) {
         const error = new Error('Tool execution error')
-        tracer.endToolCallSpan(span, undefined, error)
+        tracer.endToolCallSpan(span, { error })
       }
     })
   })
@@ -1257,7 +1218,7 @@ describe('Tracer', () => {
 
       if (parentSpan) {
         // Create child agent loop cycle span - automatically parents to the active span
-        const cycleSpan = tracer.startAgentLoopSpan('cycle-1', messages)
+        const cycleSpan = tracer.startAgentLoopSpan({ cycleId: 'cycle-1', messages })
         expect(cycleSpan).toBeDefined()
 
         if (cycleSpan) {
@@ -1282,7 +1243,7 @@ describe('Tracer', () => {
 
       if (parentSpan) {
         // Create child model invocation span - automatically parents to the active span
-        const modelSpan = tracer.startModelInvokeSpan(messages, 'model-123')
+        const modelSpan = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
         expect(modelSpan).toBeDefined()
 
         if (modelSpan) {
@@ -1319,7 +1280,7 @@ describe('Tracer', () => {
           input: { test: 'data' },
         }
 
-        const toolSpan = tracer.startToolCallSpan(toolUse)
+        const toolSpan = tracer.startToolCallSpan({ tool: toolUse })
         expect(toolSpan).toBeDefined()
 
         if (toolSpan) {
@@ -1329,7 +1290,7 @@ describe('Tracer', () => {
             content: [new TextBlock('success')],
           })
 
-          tracer.endToolCallSpan(toolSpan, toolResult)
+          tracer.endToolCallSpan(toolSpan, { toolResult })
         }
 
         tracer.endAgentSpan(parentSpan)
@@ -1350,12 +1311,12 @@ describe('Tracer', () => {
 
       if (agentSpan) {
         // Create child cycle span - automatically parents to the active span
-        const cycleSpan = tracer.startAgentLoopSpan('cycle-1', messages)
+        const cycleSpan = tracer.startAgentLoopSpan({ cycleId: 'cycle-1', messages })
         expect(cycleSpan).toBeDefined()
 
         if (cycleSpan) {
           // Create grandchild model span - automatically parents to the active span
-          const modelSpan = tracer.startModelInvokeSpan(messages, 'model-123')
+          const modelSpan = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
           expect(modelSpan).toBeDefined()
 
           if (modelSpan) {
@@ -1390,13 +1351,13 @@ describe('Tracer', () => {
       if (parentSpan) {
         // Create multiple child spans - each automatically parents to the active span
         // Note: With context stack, these will be siblings since we end each before starting the next
-        const cycle1 = tracer.startAgentLoopSpan('cycle-1', messages)
+        const cycle1 = tracer.startAgentLoopSpan({ cycleId: 'cycle-1', messages })
         if (cycle1) tracer.endAgentLoopSpan(cycle1)
 
-        const cycle2 = tracer.startAgentLoopSpan('cycle-2', messages)
+        const cycle2 = tracer.startAgentLoopSpan({ cycleId: 'cycle-2', messages })
         if (cycle2) tracer.endAgentLoopSpan(cycle2)
 
-        const model1 = tracer.startModelInvokeSpan(messages, 'model-1')
+        const model1 = tracer.startModelInvokeSpan({ messages, modelId: 'model-1' })
         if (model1) tracer.endModelInvokeSpan(model1)
 
         expect(cycle1).toBeDefined()
@@ -1430,7 +1391,7 @@ describe('Tracer', () => {
 
       if (parentSpan) {
         // Create child span with custom attributes - automatically parents to the active span
-        const childSpan = tracer.startAgentLoopSpan('cycle-1', messages)
+        const childSpan = tracer.startAgentLoopSpan({ cycleId: 'cycle-1', messages })
         expect(childSpan).toBeDefined()
 
         if (childSpan) {
@@ -1455,12 +1416,12 @@ describe('Tracer', () => {
 
       if (parentSpan) {
         // Create child span that ends with error - automatically parents to the active span
-        const childSpan = tracer.startAgentLoopSpan('cycle-1', messages)
+        const childSpan = tracer.startAgentLoopSpan({ cycleId: 'cycle-1', messages })
         expect(childSpan).toBeDefined()
 
         if (childSpan) {
           const error = new Error('Cycle error')
-          tracer.endAgentLoopSpan(childSpan, error)
+          tracer.endAgentLoopSpan(childSpan, { error })
         }
 
         // Parent should still end successfully
@@ -2055,7 +2016,7 @@ describe('Tracer', () => {
         // Create multiple spans with the same tracer
         const span1 = stableTracer.startAgentSpan({ messages, agentName: 'agent-1' })
         const span2 = stableTracer.startAgentSpan({ messages, agentName: 'agent-2' })
-        const span3 = stableTracer.startModelInvokeSpan(messages)
+        const span3 = stableTracer.startModelInvokeSpan({ messages })
 
         // All spans should be created successfully
         expect(span1).toBeDefined()
@@ -2086,7 +2047,7 @@ describe('Tracer', () => {
 
         // Create multiple spans with the same tracer
         const span1 = latestTracer.startAgentSpan({ messages, agentName: 'agent-1' })
-        const span2 = latestTracer.startModelInvokeSpan(messages)
+        const span2 = latestTracer.startModelInvokeSpan({ messages })
 
         // All spans should be created successfully
         expect(span1).toBeDefined()
@@ -2159,9 +2120,11 @@ describe('Tracer', () => {
 
         // Create different types of spans
         const agentSpan = tracer.startAgentSpan({ messages, agentName: 'agent' })
-        const modelSpan = tracer.startModelInvokeSpan(messages)
-        const toolSpan = tracer.startToolCallSpan({ name: 'test-tool', toolUseId: 'tool-1', input: { test: 'input' } })
-        const cycleSpan = tracer.startAgentLoopSpan('cycle-1', messages)
+        const modelSpan = tracer.startModelInvokeSpan({ messages })
+        const toolSpan = tracer.startToolCallSpan({
+          tool: { name: 'test-tool', toolUseId: 'tool-1', input: { test: 'input' } },
+        })
+        const cycleSpan = tracer.startAgentLoopSpan({ cycleId: 'cycle-1', messages })
 
         // All spans should be created
         expect(agentSpan).toBeDefined()
@@ -2401,7 +2364,7 @@ describe('Additional Tracer Coverage', () => {
           }),
         ]
 
-        const span = latestTracer.startModelInvokeSpan(messages, 'model-123')
+        const span = latestTracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
         expect(span).toBeDefined()
 
         if (span) {
@@ -2425,7 +2388,7 @@ describe('Additional Tracer Coverage', () => {
         }),
       ]
 
-      const span = tracer.startModelInvokeSpan(messages, 'model-123')
+      const span = tracer.startModelInvokeSpan({ messages, modelId: 'model-123' })
       expect(span).toBeDefined()
 
       if (span) {
@@ -2455,7 +2418,7 @@ describe('Additional Tracer Coverage', () => {
           input: { key: 'value' },
         }
 
-        const span = latestTracer.startToolCallSpan(toolUse)
+        const span = latestTracer.startToolCallSpan({ tool: toolUse })
         expect(span).toBeDefined()
 
         if (span) {
@@ -2465,7 +2428,7 @@ describe('Additional Tracer Coverage', () => {
             content: [new TextBlock('success')],
           })
 
-          latestTracer.endToolCallSpan(span, toolResult)
+          latestTracer.endToolCallSpan(span, { toolResult })
         }
       } finally {
         process.env.OTEL_SEMCONV_STABILITY_OPT_IN = originalEnv
@@ -2545,30 +2508,6 @@ describe('Additional Tracer Coverage', () => {
       if (span) {
         tracer.endAgentSpan(span)
       }
-    })
-  })
-
-  describe('serialization edge cases', () => {
-    it('should handle circular references by returning empty object', () => {
-      const obj: Record<string, unknown> = { key: 'value' }
-      obj.self = obj
-      const result = serialize(obj)
-      expect(result).toBe('{}')
-    })
-
-    it('should replace BigInt values', () => {
-      const bigint = BigInt(12345678901234567890n)
-      const result = serialize(bigint)
-      expect(result).toBe('"<replaced>"')
-    })
-
-    it('should handle deeply nested objects', () => {
-      let obj: Record<string, unknown> = { value: 'leaf' }
-      for (let i = 0; i < 60; i++) {
-        obj = { nested: obj }
-      }
-      const result = serialize(obj)
-      expect(result).toContain('leaf')
     })
   })
 })

@@ -17,7 +17,7 @@
  * // Run code with parentSpan as active context
  * await context.with(trace.setSpan(context.active(), parentSpan), async () => {
  *   // Child spans automatically parent to parentSpan
- *   const childSpan = tracer.startModelInvokeSpan(messages)
+ *   const childSpan = tracer.startModelInvokeSpan({ messages })
  *   // ...
  *   tracer.endModelInvokeSpan(childSpan)
  * })
@@ -29,24 +29,21 @@
 import { context, SpanStatusCode, SpanKind, trace } from '@opentelemetry/api'
 import type { Span, Tracer as OtelTracer, SpanOptions, AttributeValue } from '@opentelemetry/api'
 import { logger } from '../logging/index.js'
-import type { EndAgentSpanOptions, EndModelSpanOptions, StartAgentSpanOptions, Usage, Metrics } from './types.js'
-import type { Message, ToolResultBlock } from '../types/messages.js'
-import type { ToolUse } from '../tools/types.js'
-import { serialize } from '../types/json.js'
-import { SERVICE_NAME } from './config.js'
-
-/**
- * Parse the OTEL_SEMCONV_STABILITY_OPT_IN environment variable.
- */
-function parseSemconvOptIn(): Set<string> {
-  const optInEnv = process.env.OTEL_SEMCONV_STABILITY_OPT_IN ?? ''
-  return new Set(
-    optInEnv
-      .split(',')
-      .map((value) => value.trim())
-      .filter((value) => value.length > 0)
-  )
-}
+import type {
+  EndAgentSpanOptions,
+  EndModelSpanOptions,
+  EndToolCallSpanOptions,
+  EndAgentLoopSpanOptions,
+  StartAgentSpanOptions,
+  StartModelInvokeSpanOptions,
+  StartToolCallSpanOptions,
+  StartAgentLoopSpanOptions,
+  Usage,
+  Metrics,
+} from './types.js'
+import type { Message } from '../types/messages.js'
+import { jsonReplacer } from '../types/json.js'
+import { getServiceName } from './config.js'
 
 /**
  * Tracer manages OpenTelemetry spans for agent operations.
@@ -59,7 +56,7 @@ function parseSemconvOptIn(): Set<string> {
  * ```typescript
  * const parent = tracer.startAgentSpan({ ... })
  * context.with(trace.setSpan(context.active(), parent), () => {
- *   const child = tracer.startModelInvokeSpan(messages) // auto-parents to parent
+ *   const child = tracer.startModelInvokeSpan({ messages }) // auto-parents to parent
  * })
  * ```
  */
@@ -111,12 +108,12 @@ export class Tracer {
     this._traceAttributes = traceAttributes ?? {}
 
     // Read semantic convention version from environment
-    const optInValues = parseSemconvOptIn()
+    const optInValues = Tracer._parseSemconvOptIn()
     this._useLatestConventions = optInValues.has('gen_ai_latest_experimental')
     this._includeToolDefinitions = optInValues.has('gen_ai_tool_definitions')
 
     // Get tracer from global API to ensure ground truth
-    this._tracer = trace.getTracer(SERVICE_NAME)
+    this._tracer = trace.getTracer(getServiceName())
   }
 
   /**
@@ -147,15 +144,15 @@ export class Tracer {
 
       if (tools && tools.length > 0) {
         const toolNames = tools.map((t) => this._extractToolName(t))
-        attributes['gen_ai.agent.tools'] = serialize(toolNames)
+        attributes['gen_ai.agent.tools'] = JSON.stringify(toolNames, jsonReplacer)
       }
 
       if (this._includeToolDefinitions && toolsConfig) {
-        attributes['gen_ai.tool.definitions'] = serialize(toolsConfig)
+        attributes['gen_ai.tool.definitions'] = JSON.stringify(toolsConfig, jsonReplacer)
       }
 
       if (systemPrompt !== undefined) {
-        attributes['system_prompt'] = serialize(systemPrompt)
+        attributes['system_prompt'] = JSON.stringify(systemPrompt, jsonReplacer)
       }
 
       const mergedAttributes = { ...attributes, ...this._traceAttributes, ...traceAttributes }
@@ -196,10 +193,11 @@ export class Tracer {
    * Start a model invocation span.
    * Parents to the current active span from context.active().
    *
-   * @param messages - Messages being sent to the model
-   * @param modelId - Optional model identifier
+   * @param options - Options for starting the model invocation span
    */
-  startModelInvokeSpan(messages: Message[], modelId?: string): Span | null {
+  startModelInvokeSpan(options: StartModelInvokeSpanOptions): Span | null {
+    const { messages, modelId } = options
+
     try {
       const attributes = this._getCommonAttributes('chat')
       if (modelId) attributes['gen_ai.request.model'] = modelId
@@ -244,9 +242,11 @@ export class Tracer {
    * Start a tool call span.
    * Parents to the current active span from context.active().
    *
-   * @param tool - Tool use information
+   * @param options - Options for starting the tool call span
    */
-  startToolCallSpan(tool: ToolUse): Span | null {
+  startToolCallSpan(options: StartToolCallSpanOptions): Span | null {
+    const { tool } = options
+
     try {
       const attributes = this._getCommonAttributes('execute_tool')
       attributes['gen_ai.tool.name'] = tool.name
@@ -256,17 +256,20 @@ export class Tracer {
 
       if (this._useLatestConventions) {
         this._addEvent(span, 'gen_ai.client.inference.operation.details', {
-          'gen_ai.input.messages': serialize([
-            {
-              role: 'tool',
-              parts: [{ type: 'tool_call', name: tool.name, id: tool.toolUseId, arguments: tool.input }],
-            },
-          ]),
+          'gen_ai.input.messages': JSON.stringify(
+            [
+              {
+                role: 'tool',
+                parts: [{ type: 'tool_call', name: tool.name, id: tool.toolUseId, arguments: tool.input }],
+              },
+            ],
+            jsonReplacer
+          ),
         })
       } else {
         this._addEvent(span, 'gen_ai.tool.message', {
           role: 'tool',
-          content: serialize(tool.input),
+          content: JSON.stringify(tool.input, jsonReplacer),
           id: tool.toolUseId,
         })
       }
@@ -282,11 +285,12 @@ export class Tracer {
    * End a tool call span.
    *
    * @param span - The span to end, or null if span creation failed
-   * @param toolResult - The result of the tool execution
-   * @param error - Error if the tool call failed
+   * @param options - Options for ending the tool call span
    */
-  endToolCallSpan(span: Span | null, toolResult?: ToolResultBlock, error?: Error): void {
+  endToolCallSpan(span: Span | null, options: EndToolCallSpanOptions = {}): void {
     if (!span) return
+
+    const { toolResult, error } = options
 
     try {
       const attributes: Record<string, AttributeValue> = {}
@@ -297,16 +301,19 @@ export class Tracer {
 
         if (this._useLatestConventions) {
           this._addEvent(span, 'gen_ai.client.inference.operation.details', {
-            'gen_ai.output.messages': serialize([
-              {
-                role: 'tool',
-                parts: [{ type: 'tool_call_response', id: toolResult.toolUseId, response: toolResult.content }],
-              },
-            ]),
+            'gen_ai.output.messages': JSON.stringify(
+              [
+                {
+                  role: 'tool',
+                  parts: [{ type: 'tool_call_response', id: toolResult.toolUseId, response: toolResult.content }],
+                },
+              ],
+              jsonReplacer
+            ),
           })
         } else {
           this._addEvent(span, 'gen_ai.choice', {
-            message: serialize(toolResult.content),
+            message: JSON.stringify(toolResult.content, jsonReplacer),
             id: toolResult.toolUseId,
           })
         }
@@ -322,10 +329,11 @@ export class Tracer {
    * Start an agent loop cycle span.
    * Parents to the current active span from context.active().
    *
-   * @param cycleId - Unique identifier for this cycle
-   * @param messages - Messages at the start of this cycle
+   * @param options - Options for starting the agent loop span
    */
-  startAgentLoopSpan(cycleId: string, messages: Message[]): Span | null {
+  startAgentLoopSpan(options: StartAgentLoopSpanOptions): Span | null {
+    const { cycleId, messages } = options
+
     try {
       const attributes: Record<string, AttributeValue> = { 'agent_loop.cycle_id': cycleId }
       const span = this._startSpan('execute_agent_loop_cycle', attributes)
@@ -341,12 +349,12 @@ export class Tracer {
    * End an agent loop cycle span.
    *
    * @param span - The span to end, or null if span creation failed
-   * @param error - Error if the cycle failed
+   * @param options - Options for ending the agent loop span
    */
-  endAgentLoopSpan(span: Span | null, error?: Error): void {
+  endAgentLoopSpan(span: Span | null, options: EndAgentLoopSpanOptions = {}): void {
     if (!span) return
     try {
-      this._endSpan(span, {}, error)
+      this._endSpan(span, {}, options.error)
     } catch (err) {
       logger.warn(`error=<${err}> | failed to end agent loop cycle span`)
     }
@@ -448,9 +456,9 @@ export class Tracer {
     }
 
     if (this._useLatestConventions) {
-      attributes['gen_ai.provider.name'] = SERVICE_NAME
+      attributes['gen_ai.provider.name'] = getServiceName()
     } else {
-      attributes['gen_ai.system'] = SERVICE_NAME
+      attributes['gen_ai.system'] = getServiceName()
     }
 
     return attributes
@@ -467,13 +475,18 @@ export class Tracer {
       if (!Array.isArray(messages)) return
 
       if (this._useLatestConventions) {
-        const inputMessages = messages.map((m) => ({ role: m.role, parts: mapContentBlocksToOtelParts(m.content) }))
+        const inputMessages = messages.map((m) => ({
+          role: m.role,
+          parts: Tracer._mapContentBlocksToOtelParts(m.content),
+        }))
         this._addEvent(span, 'gen_ai.client.inference.operation.details', {
-          'gen_ai.input.messages': serialize(inputMessages),
+          'gen_ai.input.messages': JSON.stringify(inputMessages, jsonReplacer),
         })
       } else {
         for (const message of messages) {
-          this._addEvent(span, this._getEventNameForMessage(message), { content: serialize(message.content) })
+          this._addEvent(span, this._getEventNameForMessage(message), {
+            content: JSON.stringify(message.content, jsonReplacer),
+          })
         }
       }
     } catch (err) {
@@ -581,9 +594,10 @@ export class Tracer {
 
       if (this._useLatestConventions) {
         this._addEvent(span, 'gen_ai.client.inference.operation.details', {
-          'gen_ai.output.messages': serialize([
-            { role: 'assistant', parts: [{ type: 'text', content: messageText }], finish_reason: finishReason },
-          ]),
+          'gen_ai.output.messages': JSON.stringify(
+            [{ role: 'assistant', parts: [{ type: 'text', content: messageText }], finish_reason: finishReason }],
+            jsonReplacer
+          ),
         })
       } else {
         this._addEvent(span, 'gen_ai.choice', { message: messageText, finish_reason: finishReason })
@@ -602,73 +616,89 @@ export class Tracer {
 
     if (this._useLatestConventions) {
       this._addEvent(span, 'gen_ai.client.inference.operation.details', {
-        'gen_ai.output.messages': serialize([
-          {
-            role: msgObj.role,
-            parts: mapContentBlocksToOtelParts(content),
-            finish_reason: finishReason,
-          },
-        ]),
+        'gen_ai.output.messages': JSON.stringify(
+          [
+            {
+              role: msgObj.role,
+              parts: Tracer._mapContentBlocksToOtelParts(content),
+              finish_reason: finishReason,
+            },
+          ],
+          jsonReplacer
+        ),
       })
     } else {
       this._addEvent(span, 'gen_ai.choice', {
         finish_reason: finishReason,
-        message: serialize(mapContentBlocksToStableFormat(content)),
+        message: JSON.stringify(Tracer._mapContentBlocksToStableFormat(content), jsonReplacer),
       })
     }
   }
-}
 
-/**
- * Map content blocks to OTEL parts format (latest conventions).
- * Converts SDK content block types to OTEL semantic convention format.
- */
-function mapContentBlocksToOtelParts(contentBlocks: unknown[]): Record<string, unknown>[] {
-  if (!Array.isArray(contentBlocks)) return []
+  /**
+   * Parse the OTEL_SEMCONV_STABILITY_OPT_IN environment variable.
+   */
+  private static _parseSemconvOptIn(): Set<string> {
+    const optInEnv = process.env.OTEL_SEMCONV_STABILITY_OPT_IN ?? ''
+    return new Set(
+      optInEnv
+        .split(',')
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+    )
+  }
 
-  return contentBlocks.map((block) => {
-    if (!block || typeof block !== 'object') {
-      return { type: 'unknown' }
-    }
+  /**
+   * Map content blocks to OTEL parts format (latest conventions).
+   * Converts SDK content block types to OTEL semantic convention format.
+   */
+  private static _mapContentBlocksToOtelParts(contentBlocks: unknown[]): Record<string, unknown>[] {
+    if (!Array.isArray(contentBlocks)) return []
 
-    const blockObj = block as Record<string, unknown>
-
-    if (blockObj.type === 'textBlock') {
-      return { type: 'text', content: blockObj.text }
-    } else if (blockObj.type === 'toolUseBlock') {
-      return { type: 'tool_call', name: blockObj.name, id: blockObj.toolUseId, arguments: blockObj.input }
-    } else if (blockObj.type === 'toolResultBlock') {
-      return { type: 'tool_call_response', id: blockObj.toolUseId, response: blockObj.content }
-    } else if (blockObj.type === 'interruptResponseBlock') {
-      return { type: 'interrupt_response', id: blockObj.interruptId, response: blockObj.response }
-    }
-
-    return blockObj as Record<string, unknown>
-  })
-}
-
-/**
- * Map content blocks to stable format (older conventions).
- * Simplifies content blocks to a minimal structure for legacy OTEL backends.
- */
-function mapContentBlocksToStableFormat(contentBlocks: unknown[]): unknown[] {
-  if (!Array.isArray(contentBlocks)) return []
-
-  return contentBlocks
-    .map((block) => {
-      if (!block || typeof block !== 'object') return null
+    return contentBlocks.map((block) => {
+      if (!block || typeof block !== 'object') {
+        return { type: 'unknown' }
+      }
 
       const blockObj = block as Record<string, unknown>
 
-      if (blockObj.type === 'textBlock' && 'text' in blockObj) {
-        return { text: blockObj.text }
+      if (blockObj.type === 'textBlock') {
+        return { type: 'text', content: blockObj.text }
       } else if (blockObj.type === 'toolUseBlock') {
-        return { type: 'toolUse', name: blockObj.name, toolUseId: blockObj.toolUseId, input: blockObj.input }
+        return { type: 'tool_call', name: blockObj.name, id: blockObj.toolUseId, arguments: blockObj.input }
       } else if (blockObj.type === 'toolResultBlock') {
-        return { type: 'toolResult', toolUseId: blockObj.toolUseId, content: blockObj.content }
+        return { type: 'tool_call_response', id: blockObj.toolUseId, response: blockObj.content }
+      } else if (blockObj.type === 'interruptResponseBlock') {
+        return { type: 'interrupt_response', id: blockObj.interruptId, response: blockObj.response }
       }
 
-      return null
+      return blockObj as Record<string, unknown>
     })
-    .filter(Boolean)
+  }
+
+  /**
+   * Map content blocks to stable format (older conventions).
+   * Simplifies content blocks to a minimal structure for legacy OTEL backends.
+   */
+  private static _mapContentBlocksToStableFormat(contentBlocks: unknown[]): unknown[] {
+    if (!Array.isArray(contentBlocks)) return []
+
+    return contentBlocks
+      .map((block) => {
+        if (!block || typeof block !== 'object') return null
+
+        const blockObj = block as Record<string, unknown>
+
+        if (blockObj.type === 'textBlock' && 'text' in blockObj) {
+          return { text: blockObj.text }
+        } else if (blockObj.type === 'toolUseBlock') {
+          return { type: 'toolUse', name: blockObj.name, toolUseId: blockObj.toolUseId, input: blockObj.input }
+        } else if (blockObj.type === 'toolResultBlock') {
+          return { type: 'toolResult', toolUseId: blockObj.toolUseId, content: blockObj.content }
+        }
+
+        return null
+      })
+      .filter(Boolean)
+  }
 }

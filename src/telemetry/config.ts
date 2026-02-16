@@ -11,9 +11,18 @@ import { SimpleSpanProcessor, BatchSpanProcessor } from '@opentelemetry/sdk-trac
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { logger } from '../logging/index.js'
 
-export const SERVICE_NAME = 'strands-agents'
+const DEFAULT_SERVICE_NAME = 'strands-agents'
 const DEFAULT_SERVICE_NAMESPACE = 'strands'
 const DEFAULT_DEPLOYMENT_ENVIRONMENT = 'development'
+
+/**
+ * Get the service name, respecting the OTEL_SERVICE_NAME environment variable.
+ *
+ * @returns The service name from OTEL_SERVICE_NAME or the default 'strands-agents'
+ */
+export function getServiceName(): string {
+  return process.env.OTEL_SERVICE_NAME || DEFAULT_SERVICE_NAME
+}
 
 /**
  * Configuration options for setting up the tracer.
@@ -110,7 +119,7 @@ function addConsoleExporter(provider: NodeTracerProvider): void {
 }
 
 function getOtelResource(): Resource {
-  const serviceName = process.env.OTEL_SERVICE_NAME || SERVICE_NAME
+  const serviceName = getServiceName()
   const serviceNamespace = process.env.OTEL_SERVICE_NAMESPACE || DEFAULT_SERVICE_NAMESPACE
   const deploymentEnvironment = process.env.OTEL_DEPLOYMENT_ENVIRONMENT || DEFAULT_DEPLOYMENT_ENVIRONMENT
 

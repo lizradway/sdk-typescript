@@ -1,6 +1,31 @@
 import type { JSONSchema7 } from 'json-schema'
 import { JsonValidationError } from '../errors.js'
-import { logger } from '../logging/index.js'
+
+/**
+ * Custom replacer for JSON.stringify that handles non-serializable types.
+ * Converts Date to ISO string and replaces binary data, functions, symbols,
+ * and BigInt with '<replaced>'.
+ *
+ * @param _key - The property key (unused)
+ * @param value - The value to process
+ * @returns A JSON-safe value
+ */
+export function jsonReplacer(_key: string, value: unknown): unknown {
+  switch (true) {
+    case value instanceof Date:
+      return value.toISOString()
+    case typeof value === 'bigint':
+    case typeof value === 'function':
+    case typeof value === 'symbol':
+      return '<replaced>'
+    case value instanceof ArrayBuffer:
+    case value instanceof Uint8Array:
+    case ArrayBuffer.isView(value):
+      return '<replaced>'
+    default:
+      return value
+  }
+}
 
 /**
  * Represents any valid JSON value.
@@ -110,60 +135,5 @@ export function deepCopyWithValidation(value: unknown, contextPath: string = 'va
     // Otherwise, wrap it
     const errorMessage = error instanceof Error ? error.message : String(error)
     throw new Error(`Unable to serialize value: ${errorMessage}`)
-  }
-}
-
-/**
- * Serialize objects to JSON strings.
- * Handles Date objects and replaces unserializable values with '<replaced>'.
- *
- * @param value - The value to serialize
- * @returns JSON string representation
- */
-export function serialize(value: unknown): string {
-  try {
-    const processed = processValue(value)
-    const result = JSON.stringify(processed)
-    return result ?? 'undefined'
-  } catch (error) {
-    logger.warn(`error=<${error}> | failed to encode value, returning empty object`)
-    return '{}'
-  }
-}
-
-/**
- * Process any value, handling containers recursively.
- * Replaces unserializable values with '<replaced>'.
- *
- * @param value - The value to process
- * @returns Processed value safe for JSON serialization
- */
-function processValue(value: unknown): unknown {
-  // Handle Date objects
-  if (value instanceof Date) {
-    return value.toISOString()
-  }
-
-  // Handle dictionaries (objects)
-  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-    const obj = value as Record<string, unknown>
-    const processed: Record<string, unknown> = {}
-    for (const [key, val] of Object.entries(obj)) {
-      processed[key] = processValue(val)
-    }
-    return processed
-  }
-
-  // Handle arrays
-  if (Array.isArray(value)) {
-    return value.map((item) => processValue(item))
-  }
-
-  // Test if the value is JSON serializable
-  try {
-    JSON.stringify(value)
-    return value
-  } catch {
-    return '<replaced>'
   }
 }

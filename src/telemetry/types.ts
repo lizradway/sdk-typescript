@@ -3,11 +3,26 @@
  */
 
 import type { AttributeValue } from '@opentelemetry/api'
-import type { Message } from '../types/messages.js'
+import type { Message, ToolResultBlock } from '../types/messages.js'
+import type { ToolUse } from '../tools/types.js'
 import type { Usage, Metrics } from '../models/streaming.js'
 
 // Re-export for convenience
 export type { Usage, Metrics }
+
+/**
+ * Options for starting an agent span.
+ */
+export interface StartAgentSpanOptions {
+  messages: Message[]
+  agentName: string
+  agentId?: string
+  modelId?: string
+  tools?: unknown[]
+  traceAttributes?: Record<string, AttributeValue>
+  toolsConfig?: Record<string, unknown>
+  systemPrompt?: unknown
+}
 
 /**
  * Options for ending an agent span.
@@ -17,6 +32,14 @@ export interface EndAgentSpanOptions {
   error?: Error
   accumulatedUsage?: Usage
   stopReason?: string
+}
+
+/**
+ * Options for starting a model invocation span.
+ */
+export interface StartModelInvokeSpanOptions {
+  messages: Message[]
+  modelId?: string
 }
 
 /**
@@ -32,15 +55,31 @@ export interface EndModelSpanOptions {
 }
 
 /**
- * Options for starting an agent span.
+ * Options for starting a tool call span.
  */
-export interface StartAgentSpanOptions {
+export interface StartToolCallSpanOptions {
+  tool: ToolUse
+}
+
+/**
+ * Options for ending a tool call span.
+ */
+export interface EndToolCallSpanOptions {
+  toolResult?: ToolResultBlock
+  error?: Error
+}
+
+/**
+ * Options for starting an agent loop cycle span.
+ */
+export interface StartAgentLoopSpanOptions {
+  cycleId: string
   messages: Message[]
-  agentName: string
-  agentId?: string
-  modelId?: string
-  tools?: unknown[]
-  traceAttributes?: Record<string, AttributeValue>
-  toolsConfig?: Record<string, unknown>
-  systemPrompt?: unknown
+}
+
+/**
+ * Options for ending an agent loop cycle span.
+ */
+export interface EndAgentLoopSpanOptions {
+  error?: Error
 }
