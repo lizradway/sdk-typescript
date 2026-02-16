@@ -36,16 +36,6 @@ import { serialize } from '../types/json.js'
 import { SERVICE_NAME } from './config.js'
 
 /**
- * Get a Tracer instance for creating agent-specific spans.
- *
- * @param traceAttributes - Optional custom attributes to include on all spans
- * @returns A Tracer instance
- */
-export function getTracer(traceAttributes?: Record<string, AttributeValue>): Tracer {
-  return new Tracer(traceAttributes)
-}
-
-/**
  * Parse the OTEL_SEMCONV_STABILITY_OPT_IN environment variable.
  */
 function parseSemconvOptIn(): Set<string> {
@@ -157,15 +147,15 @@ export class Tracer {
 
       if (tools && tools.length > 0) {
         const toolNames = tools.map((t) => this._extractToolName(t))
-        setSerializedAttr(attributes, 'gen_ai.agent.tools', toolNames)
+        attributes['gen_ai.agent.tools'] = serialize(toolNames)
       }
 
       if (this._includeToolDefinitions && toolsConfig) {
-        setSerializedAttr(attributes, 'gen_ai.tool.definitions', toolsConfig)
+        attributes['gen_ai.tool.definitions'] = serialize(toolsConfig)
       }
 
       if (systemPrompt !== undefined) {
-        setSerializedAttr(attributes, 'system_prompt', systemPrompt)
+        attributes['system_prompt'] = serialize(systemPrompt)
       }
 
       const mergedAttributes = { ...attributes, ...this._traceAttributes, ...traceAttributes }
@@ -613,18 +603,6 @@ export class Tracer {
         message: serialize(mapContentBlocksToStableFormat(content)),
       })
     }
-  }
-}
-
-/**
- * Safely set a JSON-serialized attribute on an attributes object.
- * Catches serialization errors and logs a warning instead of throwing.
- */
-function setSerializedAttr(attrs: Record<string, AttributeValue>, key: string, value: unknown): void {
-  try {
-    attrs[key] = serialize(value)
-  } catch {
-    logger.warn(`key=<${key}> | failed to serialize attribute`)
   }
 }
 
