@@ -39,7 +39,7 @@ export default defineConfig({
           exclude: [
             'src/vended-tools/file_editor/**/*.test.ts',
             'src/vended-tools/bash/**/*.test.ts',
-            'src/telemetry/**/*.test.ts',
+            'src/telemetry/**/config.test.ts',
           ],
           name: { label: 'unit-browser', color: 'cyan' },
           browser: {
