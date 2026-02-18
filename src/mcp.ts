@@ -3,6 +3,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { takeResult } from '@modelcontextprotocol/sdk/shared/responseMessage.js'
 import type { JSONSchema, JSONValue } from './types/json.js'
 import { McpTool } from './tools/mcp-tool.js'
+import { instrumentMcpClient } from './tools/mcp-instrumentation.js'
 
 /** Temporary placeholder for RuntimeConfig */
 export interface RuntimeConfig {
@@ -30,6 +31,12 @@ export class McpClient {
       name: this._clientName,
       version: this._clientVersion,
     })
+
+    // Skip MCP instrumentation when STRANDS_OTEL_DISABLE_MCP_INSTRUMENTATION is set
+    if (!globalThis?.process?.env?.STRANDS_OTEL_DISABLE_MCP_INSTRUMENTATION) {
+      // This will inject OpenTelemetry context into distributed MCP requests
+      instrumentMcpClient(this)
+    }
   }
 
   get client(): Client {
