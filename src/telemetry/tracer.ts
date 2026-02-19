@@ -147,7 +147,7 @@ export class Tracer {
       }
 
       const mergedAttributes = { ...attributes, ...this._traceAttributes, ...traceAttributes }
-      const span = this._startSpan(spanName, mergedAttributes, SpanKind.INTERNAL)
+      const span = this._startSpan({ name: spanName, attributes: mergedAttributes, spanKind: SpanKind.INTERNAL })
 
       this._addEventMessages(span, messages)
 
@@ -187,13 +187,18 @@ export class Tracer {
    * @param options - Options for starting the model invocation span
    */
   startModelInvokeSpan(options: StartModelInvokeSpanOptions): Span | null {
-    const { messages, modelId } = options
+    const { messages, modelId, parentSpan } = options
 
     try {
       const attributes = this._getCommonAttributes('chat')
       if (modelId) attributes['gen_ai.request.model'] = modelId
 
-      const span = this._startSpan('chat', attributes, SpanKind.INTERNAL)
+      const span = this._startSpan({
+        name: 'chat',
+        attributes,
+        spanKind: SpanKind.INTERNAL,
+        ...(parentSpan && { parentSpan }),
+      })
       this._addEventMessages(span, messages)
 
       return span
@@ -236,14 +241,19 @@ export class Tracer {
    * @param options - Options for starting the tool call span
    */
   startToolCallSpan(options: StartToolCallSpanOptions): Span | null {
-    const { tool } = options
+    const { tool, parentSpan } = options
 
     try {
       const attributes = this._getCommonAttributes('execute_tool')
       attributes['gen_ai.tool.name'] = tool.name
       attributes['gen_ai.tool.call.id'] = tool.toolUseId
 
-      const span = this._startSpan(`execute_tool ${tool.name}`, attributes, SpanKind.INTERNAL)
+      const span = this._startSpan({
+        name: `execute_tool ${tool.name}`,
+        attributes,
+        spanKind: SpanKind.INTERNAL,
+        ...(parentSpan && { parentSpan }),
+      })
 
       if (this._useLatestConventions) {
         this._addEvent(span, 'gen_ai.client.inference.operation.details', {
@@ -323,11 +333,11 @@ export class Tracer {
    * @param options - Options for starting the agent loop span
    */
   startAgentLoopSpan(options: StartAgentLoopSpanOptions): Span | null {
-    const { cycleId, messages } = options
+    const { cycleId, messages, parentSpan } = options
 
     try {
       const attributes: Record<string, AttributeValue> = { 'agent_loop.cycle_id': cycleId }
-      const span = this._startSpan('execute_agent_loop_cycle', attributes)
+      const span = this._startSpan({ name: 'execute_agent_loop_cycle', attributes, ...(parentSpan && { parentSpan }) })
       this._addEventMessages(span, messages)
       return span
     } catch (error) {
@@ -354,20 +364,26 @@ export class Tracer {
   /**
    * Create a span parented to the current active context.
    */
-  private _startSpan(spanName: string, attributes?: Record<string, AttributeValue>, spanKind?: SpanKind): Span {
-    const options: SpanOptions = {}
+  private _startSpan(options: {
+    name: string
+    attributes?: Record<string, AttributeValue>
+    spanKind?: SpanKind
+    parentSpan?: Span
+  }): Span {
+    const spanOptions: SpanOptions = {}
 
-    if (attributes) {
+    if (options.attributes) {
       const otelAttributes: Record<string, AttributeValue | undefined> = {}
-      for (const [key, value] of Object.entries(attributes)) {
+      for (const [key, value] of Object.entries(options.attributes)) {
         if (value !== undefined && value !== null) otelAttributes[key] = value
       }
-      options.attributes = otelAttributes
+      spanOptions.attributes = otelAttributes
     }
 
-    if (spanKind !== undefined) options.kind = spanKind
+    if (options.spanKind !== undefined) spanOptions.kind = options.spanKind
 
-    const span = this._tracer.startSpan(spanName, options, context.active())
+    const ctx = options.parentSpan ? trace.setSpan(context.active(), options.parentSpan) : context.active()
+    const span = this._tracer.startSpan(options.name, spanOptions, ctx)
 
     try {
       span.setAttribute('gen_ai.event.start_time', new Date().toISOString())

@@ -1,35 +1,38 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, type MockInstance } from 'vitest'
 import { Agent } from '../agent.js'
 import { MockMessageModel } from '../../__fixtures__/mock-message-model.js'
 import { createMockTool } from '../../__fixtures__/tool-helpers.js'
 import { TextBlock, ToolUseBlock, ToolResultBlock, MaxTokensError } from '../../index.js'
 import { Tracer } from '../../telemetry/tracer.js'
 
-vi.mock('../../telemetry/tracer.js', () => {
-  const MockTracer = vi.fn(function (this: Record<string, unknown>) {
-    this.startAgentSpan = vi.fn().mockReturnValue({ mock: 'agentSpan' })
-    this.endAgentSpan = vi.fn()
-    this.startAgentLoopSpan = vi.fn().mockReturnValue({ mock: 'loopSpan' })
-    this.endAgentLoopSpan = vi.fn()
-    this.startModelInvokeSpan = vi.fn().mockReturnValue({ mock: 'modelSpan' })
-    this.endModelInvokeSpan = vi.fn()
-    this.startToolCallSpan = vi.fn().mockReturnValue({ mock: 'toolSpan' })
-    this.endToolCallSpan = vi.fn()
-  })
-  return { Tracer: MockTracer }
-})
+interface MockTracerInstance {
+  startAgentSpan: MockInstance
+  endAgentSpan: MockInstance
+  startAgentLoopSpan: MockInstance
+  endAgentLoopSpan: MockInstance
+  startModelInvokeSpan: MockInstance
+  endModelInvokeSpan: MockInstance
+  startToolCallSpan: MockInstance
+  endToolCallSpan: MockInstance
+}
 
-function getTracer(agent: Agent): ReturnType<typeof vi.fn> & {
-  startAgentSpan: ReturnType<typeof vi.fn>
-  endAgentSpan: ReturnType<typeof vi.fn>
-  startAgentLoopSpan: ReturnType<typeof vi.fn>
-  endAgentLoopSpan: ReturnType<typeof vi.fn>
-  startModelInvokeSpan: ReturnType<typeof vi.fn>
-  endModelInvokeSpan: ReturnType<typeof vi.fn>
-  startToolCallSpan: ReturnType<typeof vi.fn>
-  endToolCallSpan: ReturnType<typeof vi.fn>
-} {
-  return (agent as any)._tracer
+vi.mock('../../telemetry/tracer.js', () => ({
+  Tracer: vi.fn(function () {
+    return {
+      startAgentSpan: vi.fn().mockReturnValue({ mock: 'agentSpan' }),
+      endAgentSpan: vi.fn(),
+      startAgentLoopSpan: vi.fn().mockReturnValue({ mock: 'loopSpan' }),
+      endAgentLoopSpan: vi.fn(),
+      startModelInvokeSpan: vi.fn().mockReturnValue({ mock: 'modelSpan' }),
+      endModelInvokeSpan: vi.fn(),
+      startToolCallSpan: vi.fn().mockReturnValue({ mock: 'toolSpan' }),
+      endToolCallSpan: vi.fn(),
+    }
+  }),
+}))
+
+function getLatestTracer(): MockTracerInstance {
+  return vi.mocked(Tracer).mock.results.at(-1)!.value
 }
 
 describe('Agent tracer integration', () => {
@@ -82,7 +85,7 @@ describe('Agent tracer integration', () => {
     it('starts and ends agent span on successful invocation', async () => {
       const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Hello' })
       const agent = new Agent({ model, name: 'TestAgent', agentId: 'test-id' })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await agent.invoke('Hi')
 
@@ -107,7 +110,7 @@ describe('Agent tracer integration', () => {
     it('ends agent span with error when invocation fails', async () => {
       const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Partial' }, 'maxTokens')
       const agent = new Agent({ model })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await expect(agent.invoke('Hi')).rejects.toThrow(MaxTokensError)
 
@@ -124,7 +127,7 @@ describe('Agent tracer integration', () => {
     it('includes systemPrompt in agent span when configured', async () => {
       const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Hello' })
       const agent = new Agent({ model, systemPrompt: 'Be helpful' })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await agent.invoke('Hi')
 
@@ -147,7 +150,7 @@ describe('Agent tracer integration', () => {
           })
       )
       const agent = new Agent({ model, tools: [tool] })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await agent.invoke('Hi')
 
@@ -163,7 +166,7 @@ describe('Agent tracer integration', () => {
     it('starts and ends loop span for each cycle', async () => {
       const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Done' })
       const agent = new Agent({ model })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await agent.invoke('Hi')
 
@@ -189,7 +192,7 @@ describe('Agent tracer integration', () => {
       )
 
       const agent = new Agent({ model, tools: [tool] })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await agent.invoke('Use tool')
 
@@ -202,7 +205,7 @@ describe('Agent tracer integration', () => {
     it('ends loop span with error when cycle fails', async () => {
       const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Partial' }, 'maxTokens')
       const agent = new Agent({ model })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await expect(agent.invoke('Hi')).rejects.toThrow(MaxTokensError)
 
@@ -217,7 +220,7 @@ describe('Agent tracer integration', () => {
     it('starts and ends model span on successful model call', async () => {
       const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Hello' })
       const agent = new Agent({ model })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await agent.invoke('Hi')
 
@@ -236,7 +239,7 @@ describe('Agent tracer integration', () => {
     it('ends model span with error when model call fails', async () => {
       const model = new MockMessageModel().addTurn(new Error('Model failed'))
       const agent = new Agent({ model })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await expect(agent.invoke('Hi')).rejects.toThrow()
 
@@ -262,7 +265,7 @@ describe('Agent tracer integration', () => {
       )
 
       const agent = new Agent({ model, tools: [tool] })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await agent.invoke('Use tool')
 
@@ -288,7 +291,7 @@ describe('Agent tracer integration', () => {
       )
 
       const agent = new Agent({ model, tools: [tool] })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await agent.invoke('Use tool')
 
@@ -299,6 +302,7 @@ describe('Agent tracer integration', () => {
           toolUseId: 'tool-1',
           input: { key: 'val' },
         }),
+        parentSpan: { mock: 'loopSpan' },
       })
       expect(tracer.endToolCallSpan).toHaveBeenCalledTimes(1)
       expect(tracer.endToolCallSpan).toHaveBeenCalledWith(
@@ -315,7 +319,7 @@ describe('Agent tracer integration', () => {
         .addTurn({ type: 'textBlock', text: 'Done' })
 
       const agent = new Agent({ model })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await agent.invoke('Use tool')
 
@@ -337,7 +341,7 @@ describe('Agent tracer integration', () => {
       })
 
       const agent = new Agent({ model, tools: [tool] })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await agent.invoke('Use tool')
 
@@ -378,7 +382,7 @@ describe('Agent tracer integration', () => {
       )
 
       const agent = new Agent({ model, tools: [tool1, tool2] })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await agent.invoke('Use tools')
 
@@ -391,7 +395,7 @@ describe('Agent tracer integration', () => {
     it('passes accumulated usage to endAgentSpan', async () => {
       const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Hello' })
       const agent = new Agent({ model })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await agent.invoke('Hi')
 
@@ -412,7 +416,7 @@ describe('Agent tracer integration', () => {
     it('completes successfully when startAgentSpan returns null', async () => {
       const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Hello' })
       const agent = new Agent({ model })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
       tracer.startAgentSpan.mockReturnValue(null)
 
       const result = await agent.invoke('Hi')
@@ -424,7 +428,7 @@ describe('Agent tracer integration', () => {
     it('completes successfully when startAgentLoopSpan returns null', async () => {
       const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Hello' })
       const agent = new Agent({ model })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
       tracer.startAgentLoopSpan.mockReturnValue(null)
 
       const result = await agent.invoke('Hi')
@@ -436,7 +440,7 @@ describe('Agent tracer integration', () => {
     it('completes successfully when startModelInvokeSpan returns null', async () => {
       const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Hello' })
       const agent = new Agent({ model })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
       tracer.startModelInvokeSpan.mockReturnValue(null)
 
       const result = await agent.invoke('Hi')
@@ -460,7 +464,7 @@ describe('Agent tracer integration', () => {
       )
 
       const agent = new Agent({ model, tools: [tool] })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
       tracer.startToolCallSpan.mockReturnValue(null)
 
       const result = await agent.invoke('Use tool')
@@ -476,7 +480,7 @@ describe('Agent tracer integration', () => {
         .addTurn({ type: 'textBlock', text: 'First' })
         .addTurn({ type: 'textBlock', text: 'Second' })
       const agent = new Agent({ model })
-      const tracer = getTracer(agent)
+      const tracer = getLatestTracer()
 
       await agent.invoke('First')
       await agent.invoke('Second')

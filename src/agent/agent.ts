@@ -46,7 +46,6 @@ import { Tracer } from '../telemetry/tracer.js'
 import { createEmptyUsage, accumulateUsage, type Usage } from '../models/streaming.js'
 import { getModelId } from '../models/model.js'
 import type { AttributeValue, Span } from '@opentelemetry/api'
-import { context, trace } from '@opentelemetry/api'
 
 /**
  * Recursive type definition for nested tool arrays.
@@ -395,42 +394,37 @@ export class Agent implements AgentData {
 
     // Start agent trace span
     this._accumulatedTokenUsage = createEmptyUsage()
+    const agentModelId = getModelId(this.model)
     const agentSpanOptions: Parameters<Tracer['startAgentSpan']>[0] = {
       messages: inputMessages,
       agentName: this.name,
       agentId: this.agentId,
       tools: this.tools,
     }
-    const modelId = getModelId(this.model)
-    if (modelId) agentSpanOptions.modelId = modelId
+    if (agentModelId) agentSpanOptions.modelId = agentModelId
     if (this.systemPrompt) agentSpanOptions.systemPrompt = this.systemPrompt
     this._traceSpan = this._tracer.startAgentSpan(agentSpanOptions) ?? undefined
 
+    let caughtError: Error | undefined
     try {
       // Execute agent loop - child spans will be linked to agent span via context stack
       result = yield* this._executeAgentLoop(args)
 
       return result
     } catch (error) {
-      // End agent span with error
-      if (this._traceSpan) {
-        const span = this._traceSpan
-        this._traceSpan = undefined
-        this._tracer.endAgentSpan(span, { error: error as Error, accumulatedUsage: this._accumulatedTokenUsage })
-      }
+      caughtError = error as Error
       throw error
     } finally {
-      // End agent span on success (idempotent - won't double-end if catch already ended it)
       if (this._traceSpan) {
         const span = this._traceSpan
         this._traceSpan = undefined
         this._tracer.endAgentSpan(span, {
+          ...(caughtError && { error: caughtError }),
           ...(result?.lastMessage && { response: result.lastMessage }),
           accumulatedUsage: this._accumulatedTokenUsage,
           ...(result?.stopReason && { stopReason: result.stopReason }),
         })
       }
-      // Always emit final event
       yield new AfterInvocationEvent({ agent: this })
     }
   }
@@ -451,9 +445,11 @@ export class Agent implements AgentData {
       const cycleId = `cycle-${cycleCount}`
 
       // Create agent loop cycle span within agent span context
-      const cycleSpan = this._withSpanContext(this._traceSpan, () =>
-        this._tracer.startAgentLoopSpan({ cycleId, messages: this.messages })
-      )
+      const cycleSpan = this._tracer.startAgentLoopSpan({
+        cycleId,
+        messages: this.messages,
+        ...(this._traceSpan && { parentSpan: this._traceSpan }),
+      })
       this._currentLoopSpan = cycleSpan
 
       try {
@@ -572,9 +568,11 @@ export class Agent implements AgentData {
 
     // Start model span within loop span context
     const modelId = getModelId(this.model)
-    const modelSpan = this._withSpanContext(this._currentLoopSpan, () =>
-      this._tracer.startModelInvokeSpan({ messages: this.messages, ...(modelId && { modelId }) })
-    )
+    const modelSpan = this._tracer.startModelInvokeSpan({
+      messages: this.messages,
+      ...(modelId && { modelId }),
+      ...(this._currentLoopSpan && { parentSpan: this._currentLoopSpan }),
+    })
 
     try {
       const { message, stopReason, usage } = yield* this._streamFromModel(this.messages, streamOptions)
@@ -721,9 +719,10 @@ export class Agent implements AgentData {
       yield new BeforeToolCallEvent({ agent: this, toolUse, tool })
 
       // Start tool span within loop span context
-      const toolSpan = this._withSpanContext(this._currentLoopSpan, () =>
-        this._tracer.startToolCallSpan({ tool: toolUse })
-      )
+      const toolSpan = this._tracer.startToolCallSpan({
+        tool: toolUse,
+        ...(this._currentLoopSpan && { parentSpan: this._currentLoopSpan }),
+      })
 
       let toolResult: ToolResultBlock
       let error: Error | undefined
@@ -807,19 +806,6 @@ export class Agent implements AgentData {
     await this.hooks.invokeCallbacks(event)
     // Return event for yielding (stream will skip hook invocation for MessageAddedEvent)
     return event
-  }
-
-  /**
-   * Executes a function within the OTel context of a given span.
-   * Child spans created inside the function will be parented to the given span.
-   *
-   * @param span - The parent span to set as active context, or null/undefined to use current context
-   * @param fn - The function to execute within the span's context
-   * @returns The return value of the function
-   */
-  private _withSpanContext<T>(span: Span | null | undefined, fn: () => T): T {
-    if (!span) return fn()
-    return context.with(trace.setSpan(context.active(), span), fn)
   }
 }
 
