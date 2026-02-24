@@ -9,6 +9,9 @@ import { Resource, envDetectorSync } from '@opentelemetry/resources'
 import { NodeTracerProvider, ConsoleSpanExporter } from '@opentelemetry/sdk-trace-node'
 import { SimpleSpanProcessor, BatchSpanProcessor } from '@opentelemetry/sdk-trace-base'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
+import { MeterProvider, PeriodicExportingMetricReader, ConsoleMetricExporter } from '@opentelemetry/sdk-metrics'
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http'
+import { metrics as otelMetrics } from '@opentelemetry/api'
 import { logger } from '../logging/index.js'
 
 const DEFAULT_SERVICE_NAME = 'strands-agents'
@@ -134,4 +137,98 @@ function getOtelResource(): Resource {
   // Merge with OTEL_RESOURCE_ATTRIBUTES env var (env attrs take precedence)
   const envResource = envDetectorSync.detect()
   return defaultResource.merge(envResource)
+}
+
+/**
+ * Configuration options for setting up the meter provider.
+ */
+export interface MeterConfig {
+  /**
+   * Custom MeterProvider instance. If not provided, one will be
+   * created with default configuration.
+   */
+  provider?: MeterProvider
+
+  /**
+   * Exporter configuration.
+   */
+  exporters?: {
+    /**
+     * Enable OTLP exporter. Uses OTEL_EXPORTER_OTLP_ENDPOINT and
+     * OTEL_EXPORTER_OTLP_HEADERS env vars automatically.
+     */
+    otlp?: boolean
+    /**
+     * Enable console exporter for debugging.
+     */
+    console?: boolean
+  }
+}
+
+let _meterProvider: MeterProvider | null = null
+
+/**
+ * Set up the meter provider with the given configuration.
+ *
+ * @param config - Meter configuration options
+ * @returns The configured MeterProvider
+ *
+ * @example
+ * ```typescript
+ * import { telemetry } from '@strands-agents/sdk'
+ *
+ * // Simple setup with defaults
+ * const provider = telemetry.setupMeter({
+ *   exporters: { otlp: true }
+ * })
+ *
+ * // Console exporter for debugging
+ * telemetry.setupMeter({
+ *   exporters: { otlp: true, console: true }
+ * })
+ * ```
+ */
+export function setupMeter(config: MeterConfig = {}): MeterProvider {
+  if (_meterProvider) {
+    logger.warn('meter provider already initialized, returning existing provider')
+    return _meterProvider
+  }
+
+  const readers: PeriodicExportingMetricReader[] = []
+
+  if (config.exporters?.otlp) {
+    try {
+      readers.push(new PeriodicExportingMetricReader({ exporter: new OTLPMetricExporter() }))
+    } catch (error) {
+      logger.warn(`error=<${error}> | failed to configure otlp metrics exporter`)
+    }
+  }
+
+  if (config.exporters?.console) {
+    try {
+      readers.push(new PeriodicExportingMetricReader({ exporter: new ConsoleMetricExporter() }))
+    } catch (error) {
+      logger.warn(`error=<${error}> | failed to configure console metrics exporter`)
+    }
+  }
+
+  _meterProvider =
+    config.provider ??
+    new MeterProvider({
+      resource: getOtelResource(),
+      readers,
+    })
+
+  otelMetrics.setGlobalMeterProvider(_meterProvider)
+
+  // Flush pending metrics on exit
+  process.once('beforeExit', () => {
+    if (_meterProvider) {
+      _meterProvider.forceFlush().catch((err: unknown) => {
+        logger.warn(`error=<${err}> | failed to flush meter provider on exit`)
+      })
+    }
+  })
+
+  return _meterProvider
 }
