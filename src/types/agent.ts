@@ -18,7 +18,7 @@ import type {
   AgentResultEvent,
 } from '../hooks/events.js'
 import type { z } from 'zod'
-import type { LoopMetrics } from '../telemetry/metrics.js'
+import { LoopMetrics } from '../telemetry/metrics.js'
 
 /**
  * Interface for objects that provide agent state.
@@ -62,7 +62,7 @@ export class AgentResult {
    * Aggregated metrics for the agent's loop execution.
    * Tracks cycle counts, token usage, tool execution stats, and model latency.
    */
-  readonly metrics?: LoopMetrics
+  readonly metrics: LoopMetrics
 
   constructor(data: {
     stopReason: StopReason
@@ -72,11 +72,9 @@ export class AgentResult {
   }) {
     this.stopReason = data.stopReason
     this.lastMessage = data.lastMessage
+    this.metrics = data.metrics ?? new LoopMetrics()
     if (data.structuredOutput !== undefined) {
       this.structuredOutput = data.structuredOutput
-    }
-    if (data.metrics !== undefined) {
-      this.metrics = data.metrics
     }
   }
 
