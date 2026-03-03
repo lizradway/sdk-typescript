@@ -2,14 +2,14 @@
  * Loop metrics tracking for agent execution.
  *
  * Provides local metrics accumulation for cycle counts, token usage,
- * tool execution stats, and model latency. Optionally integrates with
- * OpenTelemetry MeterProvider for exporting counters and histograms.
+ * tool execution stats, and model latency.
  */
 
 import { randomUUID } from 'node:crypto'
-import type { Meter, Counter, Histogram } from '@opentelemetry/api'
+import type { Attributes, Meter, Counter, Histogram } from '@opentelemetry/api'
 import { metrics as otelMetrics } from '@opentelemetry/api'
 import type { Usage, Metrics, ModelMetadataEventData } from '../models/streaming.js'
+import type { Message } from '../types/messages.js'
 import type { ToolUse } from '../tools/types.js'
 import { getServiceName } from './config.js'
 
@@ -44,7 +44,7 @@ function accumulateUsage(target: Usage, source: Usage): void {
   }
 }
 
-// Metric name constants matching the Python SDK
+// Metric name constants
 const STRANDS_AGENT_LOOP_CYCLE_COUNT = 'strands.agent_loop.cycle_count'
 const STRANDS_AGENT_LOOP_START_CYCLE = 'strands.agent_loop.start_cycle'
 const STRANDS_AGENT_LOOP_END_CYCLE = 'strands.agent_loop.end_cycle'
@@ -114,7 +114,7 @@ export class LocalTrace {
   /**
    * Message associated with this trace.
    */
-  message: unknown = null
+  message: Message | null = null
 
   constructor(name: string, parentTrace?: LocalTrace, startTime?: number) {
     this.id = randomUUID()
@@ -220,7 +220,7 @@ export interface ToolUsageOptions {
   /**
    * The message associated with the tool call.
    */
-  message?: unknown
+  message?: Message
 }
 
 /**
@@ -399,17 +399,18 @@ export class LoopMetrics {
   /**
    * Start a new agent loop cycle and create a trace for it.
    *
-   * @param attributes - Attributes including agentLoopCycleId
-   * @returns A tuple of [startTime, cycleTrace]
+   * @returns The start time and cycle trace
    */
-  startCycle(attributes: Record<string, unknown>): { startTime: number; cycleTrace: LocalTrace } {
-    const client = getMetricsClient()
-    const otelAttrs = toOtelAttributes(attributes)
-
-    client.agentLoopCycleCount.add(1, otelAttrs)
-    client.agentLoopStartCycle.add(1, otelAttrs)
-
+  startCycle(): { cycleId: string; startTime: number; cycleTrace: LocalTrace } {
     this.cycleCount++
+
+    const client = getMetricsClient()
+    const cycleId = `cycle-${this.cycleCount}`
+    const attrs: Attributes = { agentLoopCycleId: cycleId }
+
+    client.agentLoopCycleCount.add(1, attrs)
+    client.agentLoopStartCycle.add(1, attrs)
+
     const startTime = Date.now() / 1000
     const cycleTrace = new LocalTrace(`Cycle ${this.cycleCount}`, undefined, startTime)
     this.traces.push(cycleTrace)
@@ -417,12 +418,12 @@ export class LoopMetrics {
     const latestInvocation = this.latestAgentInvocation
     if (latestInvocation) {
       latestInvocation.cycles.push({
-        agentLoopCycleId: attributes['agentLoopCycleId'] as string,
+        agentLoopCycleId: cycleId,
         usage: createEmptyUsage(),
       })
     }
 
-    return { startTime, cycleTrace }
+    return { cycleId, startTime, cycleTrace }
   }
 
   /**
@@ -430,18 +431,17 @@ export class LoopMetrics {
    *
    * @param startTime - The timestamp when the cycle started (seconds since epoch)
    * @param cycleTrace - The trace object for this cycle
-   * @param attributes - Attributes for the metric
    */
-  endCycle(startTime: number, cycleTrace: LocalTrace, attributes?: Record<string, unknown>): void {
+  endCycle(startTime: number, cycleTrace: LocalTrace): void {
     const client = getMetricsClient()
-    const otelAttrs = attributes ? toOtelAttributes(attributes) : undefined
+    const attrs: Attributes = { agentLoopCycleId: `cycle-${this.cycleCount}` }
 
-    client.agentLoopEndCycle.add(1, otelAttrs)
+    client.agentLoopEndCycle.add(1, attrs)
 
     const endTime = Date.now() / 1000
     const duration = endTime - startTime
 
-    client.agentLoopCycleDuration.record(duration, otelAttrs)
+    client.agentLoopCycleDuration.record(duration, attrs)
 
     this.cycleDurations.push(duration)
     cycleTrace.end(endTime)
@@ -480,7 +480,7 @@ export class LoopMetrics {
 
     // Emit OTEL metrics
     const client = getMetricsClient()
-    const otelAttrs = toOtelAttributes({ tool_name: toolName, tool_use_id: toolUseId })
+    const otelAttrs = { tool_name: toolName, tool_use_id: toolUseId }
     client.toolCallCount.add(1, otelAttrs)
     client.toolDuration.record(duration, otelAttrs)
     if (success) {
@@ -588,17 +588,4 @@ export class LoopMetrics {
       })),
     }
   }
-}
-
-/**
- * Convert a record to OTEL-compatible attributes (string values only).
- */
-function toOtelAttributes(attrs: Record<string, unknown>): Record<string, string> {
-  const result: Record<string, string> = {}
-  for (const [key, value] of Object.entries(attrs)) {
-    if (value !== undefined && value !== null) {
-      result[key] = String(value)
-    }
-  }
-  return result
 }

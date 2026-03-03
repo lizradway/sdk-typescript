@@ -436,18 +436,14 @@ export class Agent implements AgentData {
       context.registerTool(this._toolRegistry)
 
       // Main agent loop - continues until model stops without requesting tools
-      for (let cycleCount = 1; ; cycleCount++) {
-        const cycleId = `cycle-${cycleCount}`
+      while (true) {
+        // Start metrics cycle tracking
+        const { cycleId, startTime: cycleStartTime, cycleTrace } = this._loopMetrics.startCycle()
 
         // Create agent loop cycle span within agent span context
         const cycleSpan = this._tracer.startAgentLoopSpan({
           cycleId,
           messages: this.messages,
-        })
-
-        // Start metrics cycle tracking
-        const { startTime: cycleStartTime, cycleTrace } = this._loopMetrics.startCycle({
-          agentLoopCycleId: cycleId,
         })
 
         try {
@@ -477,7 +473,7 @@ export class Agent implements AgentData {
               // Force the model to use the structured output tool
               const toolName = context.getToolName()
               forcedToolChoice = { tool: { name: toolName } }
-              this._loopMetrics.endCycle(cycleStartTime, cycleTrace, { agentLoopCycleId: cycleId })
+              this._loopMetrics.endCycle(cycleStartTime, cycleTrace)
               this._tracer.endAgentLoopSpan(cycleSpan)
               continue
             }
@@ -486,7 +482,7 @@ export class Agent implements AgentData {
             yield this._appendMessage(modelResult.message)
 
             // End cycle tracking
-            this._loopMetrics.endCycle(cycleStartTime, cycleTrace, { agentLoopCycleId: cycleId })
+            this._loopMetrics.endCycle(cycleStartTime, cycleTrace)
 
             // End cycle span
             this._tracer.endAgentLoopSpan(cycleSpan)
@@ -522,7 +518,7 @@ export class Agent implements AgentData {
           yield this._appendMessage(toolResultMessage)
 
           // End cycle tracking
-          this._loopMetrics.endCycle(cycleStartTime, cycleTrace, { agentLoopCycleId: cycleId })
+          this._loopMetrics.endCycle(cycleStartTime, cycleTrace)
 
           // End cycle span
           this._tracer.endAgentLoopSpan(cycleSpan)
