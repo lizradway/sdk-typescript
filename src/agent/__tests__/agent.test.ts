@@ -24,6 +24,7 @@ import { AgentPrinter } from '../printer.js'
 import { BeforeInvocationEvent, BeforeToolsEvent } from '../../hooks/events.js'
 import { BedrockModel } from '../../models/bedrock.js'
 import { StructuredOutputException } from '../../structured-output/exceptions.js'
+import { expectLoopMetrics } from '../../__fixtures__/metrics-helpers.js'
 
 describe('Agent', () => {
   describe('stream', () => {
@@ -72,6 +73,7 @@ describe('Agent', () => {
               role: 'assistant',
               content: expect.arrayContaining([expect.objectContaining({ type: 'textBlock', text: 'Hello' })]),
             }),
+            metrics: expectLoopMetrics({ cycleCount: 1 }),
           })
         )
       })
@@ -189,15 +191,17 @@ describe('Agent', () => {
 
         const result = await agent.invoke('Test prompt')
 
-        expect(result).toEqual({
-          type: 'agentResult',
-          stopReason: 'endTurn',
-          lastMessage: expect.objectContaining({
-            type: 'message',
-            role: 'assistant',
-            content: expect.arrayContaining([expect.objectContaining({ type: 'textBlock', text: 'Response text' })]),
-          }),
-        })
+        expect(result).toEqual(
+          new AgentResult({
+            stopReason: 'endTurn',
+            lastMessage: expect.objectContaining({
+              type: 'message',
+              role: 'assistant',
+              content: expect.arrayContaining([expect.objectContaining({ type: 'textBlock', text: 'Response text' })]),
+            }),
+            metrics: expectLoopMetrics({ cycleCount: 1 }),
+          })
+        )
       })
 
       it('consumes stream events internally', async () => {
@@ -206,15 +210,17 @@ describe('Agent', () => {
 
         const result = await agent.invoke('Test')
 
-        expect(result).toEqual({
-          type: 'agentResult',
-          stopReason: 'endTurn',
-          lastMessage: expect.objectContaining({
-            type: 'message',
-            role: 'assistant',
-            content: expect.arrayContaining([expect.objectContaining({ type: 'textBlock', text: 'Hello' })]),
-          }),
-        })
+        expect(result).toEqual(
+          new AgentResult({
+            stopReason: 'endTurn',
+            lastMessage: expect.objectContaining({
+              type: 'message',
+              role: 'assistant',
+              content: expect.arrayContaining([expect.objectContaining({ type: 'textBlock', text: 'Hello' })]),
+            }),
+            metrics: expectLoopMetrics({ cycleCount: 1 }),
+          })
+        )
       })
     })
 
@@ -238,15 +244,19 @@ describe('Agent', () => {
 
         const result = await agent.invoke('What is 1 + 2?')
 
-        expect(result).toEqual({
-          type: 'agentResult',
-          stopReason: 'endTurn',
-          lastMessage: expect.objectContaining({
-            type: 'message',
-            role: 'assistant',
-            content: expect.arrayContaining([expect.objectContaining({ type: 'textBlock', text: 'The answer is 3' })]),
-          }),
-        })
+        expect(result).toEqual(
+          new AgentResult({
+            stopReason: 'endTurn',
+            lastMessage: expect.objectContaining({
+              type: 'message',
+              role: 'assistant',
+              content: expect.arrayContaining([
+                expect.objectContaining({ type: 'textBlock', text: 'The answer is 3' }),
+              ]),
+            }),
+            metrics: expectLoopMetrics({ cycleCount: 2, toolNames: ['calc'] }),
+          })
+        )
       })
     })
 
@@ -303,7 +313,8 @@ describe('Agent', () => {
       const invokeResult = await agent1.invoke('Use tool')
       const { result: streamResult } = await collectGenerator(agent2.stream('Use tool'))
 
-      expect(invokeResult).toEqual(streamResult)
+      expect(invokeResult.stopReason).toBe(streamResult.stopReason)
+      expect(invokeResult.lastMessage).toEqual(streamResult.lastMessage)
     })
   })
 
