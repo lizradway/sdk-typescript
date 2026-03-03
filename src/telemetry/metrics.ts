@@ -322,7 +322,7 @@ export interface LoopMetricsSummary {
   /**
    * Accumulated token usage across all invocations.
    */
-  accumulatedUsage: Usage
+  usage: Usage
 
   /**
    * Accumulated model latency metrics across all invocations.
@@ -348,7 +348,7 @@ export interface LoopMetricsSummary {
  * ```typescript
  * const result = await agent.invoke('Hello')
  * console.log(result.metrics.cycleCount)
- * console.log(result.metrics.accumulatedUsage)
+ * console.log(result.metrics.usage)
  * console.log(result.metrics.toolMetrics)
  * console.log(result.metrics.getSummary())
  * ```
@@ -382,7 +382,7 @@ export class LoopMetrics {
   /**
    * Accumulated token usage across all model invocations.
    */
-  readonly accumulatedUsage: Usage = createEmptyUsage()
+  readonly usage: Usage = createEmptyUsage()
 
   /**
    * Accumulated performance metrics across all model invocations.
@@ -510,7 +510,7 @@ export class LoopMetrics {
       client.agentLoopCacheWriteInputTokens.record(usage.cacheWriteInputTokens)
     }
 
-    accumulateUsage(this.accumulatedUsage, usage)
+    accumulateUsage(this.usage, usage)
 
     const latestInvocation = this.latestAgentInvocation
     if (latestInvocation) {
@@ -577,7 +577,7 @@ export class LoopMetrics {
       averageCycleTime: this.cycleCount > 0 ? totalDuration / this.cycleCount : 0,
       toolUsage,
       traces: this.traces,
-      accumulatedUsage: this.accumulatedUsage,
+      usage: this.usage,
       accumulatedMetrics: { latencyMs: this.accumulatedMetrics.latencyMs },
       agentInvocations: this.agentInvocations.map((inv) => ({
         usage: inv.usage,
