@@ -8,8 +8,8 @@
 // Agent class
 export { Agent } from './agent/agent.js'
 
-// Agent state type (not constructor - internal implementation)
-export type { AgentState } from './agent/state.js'
+// App state
+export { AppState } from './app-state.js'
 
 // Agent types
 export type { AgentData } from './types/agent.js'
