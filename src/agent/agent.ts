@@ -537,7 +537,7 @@ export class Agent implements AgentData {
       this._tracer.endAgentSpan(agentSpan, {
         ...(caughtError && { error: caughtError }),
         ...(result?.lastMessage && { response: result.lastMessage }),
-        accumulatedUsage: this._loopMetrics.usage,
+        accumulatedUsage: this._loopMetrics.accumulatedUsage,
         ...(result?.stopReason && { stopReason: result.stopReason }),
       })
 

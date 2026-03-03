@@ -58,7 +58,7 @@ export function expectLoopMetrics(options: LoopMetricsMatcher): LoopMetrics {
     cycleCount,
     toolMetrics: toolNames.length > 0 ? expect.objectContaining(expectedToolMetrics) : {},
     cycleDurations: expect.arrayContaining(Array.from({ length: cycleCount }, () => expect.any(Number))),
-    usage: expect.objectContaining({
+    accumulatedUsage: expect.objectContaining({
       inputTokens: expect.any(Number),
       outputTokens: expect.any(Number),
       totalTokens: expect.any(Number),
