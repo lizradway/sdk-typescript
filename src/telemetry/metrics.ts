@@ -10,9 +10,39 @@ import { randomUUID } from 'node:crypto'
 import type { Meter, Counter, Histogram } from '@opentelemetry/api'
 import { metrics as otelMetrics } from '@opentelemetry/api'
 import type { Usage, Metrics, ModelMetadataEventData } from '../models/streaming.js'
-import { Model } from '../models/model.js'
 import type { ToolUse } from '../tools/types.js'
 import { getServiceName } from './config.js'
+
+/**
+ * Creates an empty Usage object with all counters set to zero.
+ *
+ * @returns A Usage object with zeroed counters
+ */
+function createEmptyUsage(): Usage {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+  }
+}
+
+/**
+ * Accumulates token usage from a source into a target Usage object.
+ *
+ * @param target - The Usage object to accumulate into (mutated in place)
+ * @param source - The Usage object to accumulate from
+ */
+function accumulateUsage(target: Usage, source: Usage): void {
+  target.inputTokens += source.inputTokens
+  target.outputTokens += source.outputTokens
+  target.totalTokens += source.totalTokens
+  if (source.cacheReadInputTokens !== undefined) {
+    target.cacheReadInputTokens = (target.cacheReadInputTokens ?? 0) + source.cacheReadInputTokens
+  }
+  if (source.cacheWriteInputTokens !== undefined) {
+    target.cacheWriteInputTokens = (target.cacheWriteInputTokens ?? 0) + source.cacheWriteInputTokens
+  }
+}
 
 // Metric name constants matching the Python SDK
 const STRANDS_AGENT_LOOP_CYCLE_COUNT = 'strands.agent_loop.cycle_count'
@@ -352,7 +382,7 @@ export class LoopMetrics {
   /**
    * Accumulated token usage across all model invocations.
    */
-  readonly accumulatedUsage: Usage = Model.createEmptyUsage()
+  readonly accumulatedUsage: Usage = createEmptyUsage()
 
   /**
    * Accumulated performance metrics across all model invocations.
@@ -388,7 +418,7 @@ export class LoopMetrics {
     if (latestInvocation) {
       latestInvocation.cycles.push({
         agentLoopCycleId: attributes['agentLoopCycleId'] as string,
-        usage: Model.createEmptyUsage(),
+        usage: createEmptyUsage(),
       })
     }
 
@@ -480,15 +510,15 @@ export class LoopMetrics {
       client.agentLoopCacheWriteInputTokens.record(usage.cacheWriteInputTokens)
     }
 
-    Model.accumulateUsage(this.accumulatedUsage, usage)
+    accumulateUsage(this.accumulatedUsage, usage)
 
     const latestInvocation = this.latestAgentInvocation
     if (latestInvocation) {
-      Model.accumulateUsage(latestInvocation.usage, usage)
+      accumulateUsage(latestInvocation.usage, usage)
 
       const cycles = latestInvocation.cycles
       if (cycles.length > 0) {
-        Model.accumulateUsage(cycles[cycles.length - 1]!.usage, usage)
+        accumulateUsage(cycles[cycles.length - 1]!.usage, usage)
       }
     }
   }
@@ -517,7 +547,7 @@ export class LoopMetrics {
   resetUsageMetrics(): void {
     this.agentInvocations.push({
       cycles: [],
-      usage: Model.createEmptyUsage(),
+      usage: createEmptyUsage(),
     })
   }
 
