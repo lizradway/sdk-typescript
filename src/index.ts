@@ -189,3 +189,6 @@ export { StructuredOutputException } from './structured-output/exceptions.js'
 
 // Telemetry
 export * as telemetry from './telemetry/index.js'
+
+// Local Metrics
+export { AgentLoopMetrics } from './telemetry/metrics.js'
