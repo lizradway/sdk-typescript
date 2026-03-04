@@ -5,6 +5,8 @@
  * tool execution stats, and model latency.
  */
 
+import type { Attributes, Counter, Histogram } from '@opentelemetry/api'
+import { getMeter } from './config.js'
 import type { Usage, Metrics, ModelMetadataEventData } from '../models/streaming.js'
 import type { Message } from '../types/messages.js'
 import type { ToolUse } from '../tools/types.js'
@@ -39,6 +41,22 @@ function accumulateUsage(target: Usage, source: Usage): void {
     target.cacheWriteInputTokens = (target.cacheWriteInputTokens ?? 0) + source.cacheWriteInputTokens
   }
 }
+
+// Metric name constants
+const STRANDS_AGENT_LOOP_CYCLE_COUNT = 'strands.agent_loop.cycle_count'
+const STRANDS_AGENT_LOOP_START_CYCLE = 'strands.agent_loop.start_cycle'
+const STRANDS_AGENT_LOOP_END_CYCLE = 'strands.agent_loop.end_cycle'
+const STRANDS_AGENT_LOOP_CYCLE_DURATION = 'strands.agent_loop.cycle_duration'
+const STRANDS_AGENT_LOOP_INPUT_TOKENS = 'strands.agent_loop.input.tokens'
+const STRANDS_AGENT_LOOP_OUTPUT_TOKENS = 'strands.agent_loop.output.tokens'
+const STRANDS_AGENT_LOOP_CACHE_READ_INPUT_TOKENS = 'strands.agent_loop.cache_read.input.tokens'
+const STRANDS_AGENT_LOOP_CACHE_WRITE_INPUT_TOKENS = 'strands.agent_loop.cache_write.input.tokens'
+const STRANDS_AGENT_LOOP_LATENCY = 'strands.agent_loop.latency'
+const STRANDS_MODEL_TIME_TO_FIRST_TOKEN = 'strands.model.time_to_first_token'
+const STRANDS_TOOL_CALL_COUNT = 'strands.tool.call_count'
+const STRANDS_TOOL_DURATION = 'strands.tool.duration'
+const STRANDS_TOOL_SUCCESS_COUNT = 'strands.tool.success_count'
+const STRANDS_TOOL_ERROR_COUNT = 'strands.tool.error_count'
 
 /**
  * Execution trace for performance analysis.
@@ -191,7 +209,7 @@ export interface AgentInvocation {
 /**
  * Options for recording tool usage.
  */
-interface ToolUsageOptions {
+export interface ToolUsageOptions {
   /**
    * The tool that was used.
    */
@@ -216,6 +234,61 @@ interface ToolUsageOptions {
    * The message associated with the tool call.
    */
   message?: Message
+}
+
+/**
+ * OpenTelemetry meter instruments for emitting metrics.
+ * Lazily initialized on first access.
+ */
+class MetricsClient {
+  readonly agentLoopCycleCount: Counter
+  readonly agentLoopStartCycle: Counter
+  readonly agentLoopEndCycle: Counter
+  readonly agentLoopCycleDuration: Histogram
+  readonly agentLoopInputTokens: Histogram
+  readonly agentLoopOutputTokens: Histogram
+  readonly agentLoopCacheReadInputTokens: Histogram
+  readonly agentLoopCacheWriteInputTokens: Histogram
+  readonly agentLoopLatency: Histogram
+  readonly modelTimeToFirstToken: Histogram
+  readonly toolCallCount: Counter
+  readonly toolDuration: Histogram
+  readonly toolSuccessCount: Counter
+  readonly toolErrorCount: Counter
+
+  constructor() {
+    const meter = getMeter()
+
+    this.agentLoopCycleCount = meter.createCounter(STRANDS_AGENT_LOOP_CYCLE_COUNT)
+    this.agentLoopStartCycle = meter.createCounter(STRANDS_AGENT_LOOP_START_CYCLE)
+    this.agentLoopEndCycle = meter.createCounter(STRANDS_AGENT_LOOP_END_CYCLE)
+    this.agentLoopCycleDuration = meter.createHistogram(STRANDS_AGENT_LOOP_CYCLE_DURATION)
+    this.agentLoopInputTokens = meter.createHistogram(STRANDS_AGENT_LOOP_INPUT_TOKENS)
+    this.agentLoopOutputTokens = meter.createHistogram(STRANDS_AGENT_LOOP_OUTPUT_TOKENS)
+    this.agentLoopCacheReadInputTokens = meter.createHistogram(STRANDS_AGENT_LOOP_CACHE_READ_INPUT_TOKENS)
+    this.agentLoopCacheWriteInputTokens = meter.createHistogram(STRANDS_AGENT_LOOP_CACHE_WRITE_INPUT_TOKENS)
+    this.agentLoopLatency = meter.createHistogram(STRANDS_AGENT_LOOP_LATENCY)
+    this.modelTimeToFirstToken = meter.createHistogram(STRANDS_MODEL_TIME_TO_FIRST_TOKEN)
+    this.toolCallCount = meter.createCounter(STRANDS_TOOL_CALL_COUNT)
+    this.toolDuration = meter.createHistogram(STRANDS_TOOL_DURATION)
+    this.toolSuccessCount = meter.createCounter(STRANDS_TOOL_SUCCESS_COUNT)
+    this.toolErrorCount = meter.createCounter(STRANDS_TOOL_ERROR_COUNT)
+  }
+}
+
+let _metricsClient: MetricsClient | null = null
+
+/**
+ * Get the singleton MetricsClient, lazily initialized on first access.
+ * Returns a no-op meter if setupMeter() hasn't been called.
+ *
+ * @returns The MetricsClient instance
+ */
+function getMetricsClient(): MetricsClient {
+  if (!_metricsClient) {
+    _metricsClient = new MetricsClient()
+  }
+  return _metricsClient
 }
 
 /**
@@ -336,7 +409,13 @@ export class AgentLoopMetrics {
   startCycle(): { cycleId: string; startTime: number; cycleTrace: LocalTrace } {
     this._cycleCount++
 
+    const client = getMetricsClient()
     const cycleId = `cycle-${this._cycleCount}`
+    const attrs: Attributes = { agentLoopCycleId: cycleId }
+
+    client.agentLoopCycleCount.add(1, attrs)
+    client.agentLoopStartCycle.add(1, attrs)
+
     const startTime = Date.now() / 1000
     const cycleTrace = new LocalTrace(`Cycle ${this._cycleCount}`, undefined, startTime)
     this.traces.push(cycleTrace)
@@ -359,8 +438,15 @@ export class AgentLoopMetrics {
    * @param cycleTrace - The trace object for this cycle
    */
   endCycle(startTime: number, cycleTrace: LocalTrace): void {
+    const client = getMetricsClient()
+    const attrs: Attributes = { agentLoopCycleId: `cycle-${this._cycleCount}` }
+
+    client.agentLoopEndCycle.add(1, attrs)
+
     const endTime = Date.now() / 1000
     const duration = endTime - startTime
+
+    client.agentLoopCycleDuration.record(duration, attrs)
 
     this.cycleDurations.push(duration)
     cycleTrace.end(endTime)
@@ -388,7 +474,6 @@ export class AgentLoopMetrics {
     if (!this.toolMetrics[toolName]) {
       this.toolMetrics[toolName] = { callCount: 0, successCount: 0, errorCount: 0, totalTime: 0 }
     }
-
     const toolEntry = this.toolMetrics[toolName]!
     toolEntry.callCount++
     toolEntry.totalTime += duration
@@ -398,6 +483,19 @@ export class AgentLoopMetrics {
     } else {
       toolEntry.errorCount++
     }
+
+    // Emit OTEL metrics
+    const client = getMetricsClient()
+    const otelAttrs = { tool_name: toolName, tool_use_id: toolUseId }
+    client.toolCallCount.add(1, otelAttrs)
+    client.toolDuration.record(duration, otelAttrs)
+    if (success) {
+      client.toolSuccessCount.add(1, otelAttrs)
+    } else {
+      client.toolErrorCount.add(1, otelAttrs)
+    }
+
+    toolTrace.end()
   }
 
   /**
@@ -406,6 +504,18 @@ export class AgentLoopMetrics {
    * @param usage - The usage data to accumulate
    */
   updateUsage(usage: Usage): void {
+    const client = getMetricsClient()
+
+    client.agentLoopInputTokens.record(usage.inputTokens)
+    client.agentLoopOutputTokens.record(usage.outputTokens)
+
+    if (usage.cacheReadInputTokens !== undefined) {
+      client.agentLoopCacheReadInputTokens.record(usage.cacheReadInputTokens)
+    }
+    if (usage.cacheWriteInputTokens !== undefined) {
+      client.agentLoopCacheWriteInputTokens.record(usage.cacheWriteInputTokens)
+    }
+
     accumulateUsage(this.accumulatedUsage, usage)
 
     const latestInvocation = this.latestAgentInvocation
@@ -430,12 +540,15 @@ export class AgentLoopMetrics {
     }
     if (metadata.metrics) {
       this.accumulatedMetrics.latencyMs += metadata.metrics.latencyMs
+
+      const client = getMetricsClient()
+      client.agentLoopLatency.record(metadata.metrics.latencyMs)
     }
   }
 
   /**
-   * Begin tracking a new agent invocation.
-   * Creates a new AgentInvocation entry for per-invocation metrics.
+   * Start a new agent invocation by creating a new AgentInvocation entry.
+   * Call this at the start of each new request.
    */
   startNewInvocation(): void {
     this.agentInvocations.push({
