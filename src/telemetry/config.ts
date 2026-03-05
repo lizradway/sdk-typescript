@@ -38,7 +38,7 @@ export function getServiceName(): string {
  * ```typescript
  * import { telemetry } from '@strands-agents/sdk'
  *
- * // Set up telemetry first
+ * // Set up telemetry first (or register your own NodeTracerProvider)
  * telemetry.setupTracer({ exporters: { otlp: true } })
  *
  * // Get a tracer and create custom spans
