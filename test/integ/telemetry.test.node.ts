@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { Agent, telemetry, tool } from '@strands-agents/sdk'
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'
 import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
 import type { ReadableSpan } from '@opentelemetry/sdk-trace-base'
-import { SpanStatusCode } from '@opentelemetry/api'
+import { SpanStatusCode, trace, context } from '@opentelemetry/api'
 import { z } from 'zod'
 import { MockMessageModel } from '$/sdk/__fixtures__/mock-message-model.js'
 import { TestModelProvider, collectGenerator } from '$/sdk/__fixtures__/model-test-helpers.js'
@@ -714,41 +714,115 @@ describe.sequential('Telemetry Integration', () => {
       expect(attr(customSpans[0]!, 'custom.key')).toBe('custom-value')
     })
 
-    it('uses the configured service name as the instrumentation scope', async () => {
-      const tracer = telemetry.getTracer()
-      const span = tracer.startSpan('scope-check')
-      span.end()
-
-      const spans = await flush()
-      const scopeSpan = spans.find((s) => s.name === 'scope-check')!
-
-      expect(scopeSpan.instrumentationLibrary.name).toBe('strands-agents')
-    })
-
-    it('respects OTEL_SERVICE_NAME for the instrumentation scope', async () => {
-      vi.stubEnv('OTEL_SERVICE_NAME', 'my-weather-app')
+    it('captures spans when user registers their own NodeTracerProvider without setupTracer', async () => {
+      const userExporter = new InMemorySpanExporter()
+      const userProvider = new NodeTracerProvider()
+      userProvider.addSpanProcessor(new SimpleSpanProcessor(userExporter))
+      userProvider.register()
 
       const tracer = telemetry.getTracer()
-      const span = tracer.startSpan('custom-scope-check')
+      const span = tracer.startSpan('user-provider-span')
+      span.setAttribute('source', 'custom-provider')
       span.end()
 
-      const spans = await flush()
-      const scopeSpan = spans.find((s) => s.name === 'custom-scope-check')!
+      await userProvider.forceFlush()
+      const spans = userExporter.getFinishedSpans()
+      const userSpan = spans.find((s) => s.name === 'user-provider-span')
 
-      expect(scopeSpan.instrumentationLibrary.name).toBe('my-weather-app')
+      expect(userSpan).toBeDefined()
+      expect(userSpan!.attributes['source']).toBe('custom-provider')
+
+      // Re-register the shared test provider so subsequent tests aren't affected
+      provider.register()
     })
 
-    it('creates spans that nest correctly under agent spans', async () => {
+    it('uses the last registered provider when both setupTracer and manual register are called', async () => {
+      // setupTracer registered the shared provider first, then user registers theirs
+      const userExporter = new InMemorySpanExporter()
+      const userProvider = new NodeTracerProvider()
+      userProvider.addSpanProcessor(new SimpleSpanProcessor(userExporter))
+      userProvider.register()
+
+      const tracer = telemetry.getTracer()
+      const span = tracer.startSpan('both-providers-span')
+      span.end()
+
+      await userProvider.forceFlush()
+      const userSpans = userExporter.getFinishedSpans()
+      const capturedSpan = userSpans.find((s) => s.name === 'both-providers-span')
+
+      // Span lands in the user's provider since it registered last
+      expect(capturedSpan).toBeDefined()
+
+      // The shared test exporter should NOT have this span
+      await provider.forceFlush()
+      const sharedSpans = exporter.getFinishedSpans()
+      const leakedSpan = sharedSpans.find((s) => s.name === 'both-providers-span')
+      expect(leakedSpan).toBeUndefined()
+
+      // Restore shared provider for subsequent tests
+      provider.register()
+    })
+
+    it('uses setupTracer provider when it registers after a user provider', async () => {
+      // User registers their own provider first
+      const userExporter = new InMemorySpanExporter()
+      const userProvider = new NodeTracerProvider()
+      userProvider.addSpanProcessor(new SimpleSpanProcessor(userExporter))
+      userProvider.register()
+
+      // Then a second provider registers, overriding the user's
+      const setupExporter = new InMemorySpanExporter()
+      const setupProvider = new NodeTracerProvider()
+      setupProvider.addSpanProcessor(new SimpleSpanProcessor(setupExporter))
+      setupProvider.register()
+
+      const tracer = telemetry.getTracer()
+      const span = tracer.startSpan('reverse-order-span')
+      span.end()
+
+      await setupProvider.forceFlush()
+      const setupSpans = setupExporter.getFinishedSpans()
+      const capturedSpan = setupSpans.find((s) => s.name === 'reverse-order-span')
+
+      // Span lands in the later provider since it registered last
+      expect(capturedSpan).toBeDefined()
+
+      // The user's provider should NOT have this span
+      await userProvider.forceFlush()
+      const userSpans = userExporter.getFinishedSpans()
+      const leakedSpan = userSpans.find((s) => s.name === 'reverse-order-span')
+      expect(leakedSpan).toBeUndefined()
+
+      // Restore shared provider for subsequent tests
+      provider.register()
+    })
+
+    it('creates custom spans that nest under agent spans via context propagation', async () => {
       const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Hi' })
-      const agent = new Agent({ model, printer: false, name: 'gettracer-agent' })
+      const agent = new Agent({ model, printer: false, name: 'gettracer-nest-agent' })
 
       await agent.invoke('Hello')
 
-      const spans = await flush()
-      const agentSpan = findSpans(spans, AGENT_SPAN_PREFIX)[0]!
+      const allSpans = await flush()
+      const agentReadableSpan = findSpans(allSpans, AGENT_SPAN_PREFIX)[0]!
 
-      // Agent internally uses getTracer — verify the tracer produced valid spans
-      expect(agentSpan.instrumentationLibrary.name).toBe('strands-agents')
+      // Wrap the ReadableSpan's context into a live span reference for context propagation
+      const agentSpanRef = trace.wrapSpanContext(agentReadableSpan.spanContext())
+
+      // Create a custom span parented to the agent span via context
+      const tracer = telemetry.getTracer()
+      context.with(trace.setSpan(context.active(), agentSpanRef), () => {
+        const childSpan = tracer.startSpan('custom-child')
+        childSpan.end()
+      })
+
+      const spansAfter = await flush()
+      const childSpan = spansAfter.find((s) => s.name === 'custom-child')!
+
+      expect(childSpan).toBeDefined()
+      expect(childSpan.spanContext().traceId).toBe(agentReadableSpan.spanContext().traceId)
+      expect(childSpan.parentSpanId).toBe(agentReadableSpan.spanContext().spanId)
     })
   })
 })

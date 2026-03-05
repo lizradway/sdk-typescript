@@ -27,7 +27,7 @@ export function getServiceName(): string {
 }
 
 /**
- * Get an OpenTelemetry Tracer instance for the Strands service.
+ * Get an OpenTelemetry Tracer instance.
  *
  * Wraps the OTel trace API to provide a consistent tracer scoped to the
  * configured service name.
@@ -45,7 +45,9 @@ export function getServiceName(): string {
  * const tracer = telemetry.getTracer()
  * const span = tracer.startSpan('my-custom-operation')
  * span.setAttribute('custom.key', 'value')
- * // ... do work ...
+ *
+ * // ........
+ *
  * span.end()
  * ```
  */
