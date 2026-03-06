@@ -9,7 +9,6 @@ import {
   MaxTokensError,
   TextBlock,
   CachePointBlock,
-  AgentResult,
   Message,
   ToolUseBlock,
   ToolResultBlock,
@@ -65,16 +64,18 @@ describe('Agent', () => {
 
         const { result } = await collectGenerator(agent.stream('Test prompt'))
 
-        expect(result).toEqual(
-          new AgentResult({
-            stopReason: 'endTurn',
-            lastMessage: expect.objectContaining({
-              role: 'assistant',
-              content: expect.arrayContaining([expect.objectContaining({ type: 'textBlock', text: 'Hello' })]),
-            }),
-            metrics: expectLoopMetrics({ cycleCount: 1 }),
+        expect(result.stopReason).toBe('endTurn')
+        expect(result.lastMessage).toEqual(
+          expect.objectContaining({
+            role: 'assistant',
+            content: expect.arrayContaining([expect.objectContaining({ type: 'textBlock', text: 'Hello' })]),
           })
         )
+        expect(result.metrics).toEqual(expectLoopMetrics({ cycleCount: 1 }))
+        expect(result.traces).toHaveLength(1)
+        expect(result.traces[0]!.name).toBe('Cycle 1')
+        expect(result.traces[0]!.children).toHaveLength(1)
+        expect(result.traces[0]!.children[0]!.name).toBe('stream_messages')
       })
     })
 
@@ -190,17 +191,17 @@ describe('Agent', () => {
 
         const result = await agent.invoke('Test prompt')
 
-        expect(result).toEqual(
-          new AgentResult({
-            stopReason: 'endTurn',
-            lastMessage: expect.objectContaining({
-              type: 'message',
-              role: 'assistant',
-              content: expect.arrayContaining([expect.objectContaining({ type: 'textBlock', text: 'Response text' })]),
-            }),
-            metrics: expectLoopMetrics({ cycleCount: 1 }),
+        expect(result.stopReason).toBe('endTurn')
+        expect(result.lastMessage).toEqual(
+          expect.objectContaining({
+            type: 'message',
+            role: 'assistant',
+            content: expect.arrayContaining([expect.objectContaining({ type: 'textBlock', text: 'Response text' })]),
           })
         )
+        expect(result.metrics).toEqual(expectLoopMetrics({ cycleCount: 1 }))
+        expect(result.traces).toHaveLength(1)
+        expect(result.traces[0]!.name).toBe('Cycle 1')
       })
 
       it('consumes stream events internally', async () => {
@@ -209,17 +210,19 @@ describe('Agent', () => {
 
         const result = await agent.invoke('Test')
 
-        expect(result).toEqual(
-          new AgentResult({
-            stopReason: 'endTurn',
-            lastMessage: expect.objectContaining({
-              type: 'message',
-              role: 'assistant',
-              content: expect.arrayContaining([expect.objectContaining({ type: 'textBlock', text: 'Hello' })]),
-            }),
-            metrics: expectLoopMetrics({ cycleCount: 1 }),
+        expect(result.stopReason).toBe('endTurn')
+        expect(result.lastMessage).toEqual(
+          expect.objectContaining({
+            type: 'message',
+            role: 'assistant',
+            content: expect.arrayContaining([expect.objectContaining({ type: 'textBlock', text: 'Hello' })]),
           })
         )
+        expect(result.metrics).toEqual(expectLoopMetrics({ cycleCount: 1 }))
+        expect(result.traces).toHaveLength(1)
+        expect(result.traces[0]!.name).toBe('Cycle 1')
+        expect(result.traces[0]!.children).toHaveLength(1)
+        expect(result.traces[0]!.children[0]!.name).toBe('stream_messages')
       })
     })
 
@@ -243,19 +246,21 @@ describe('Agent', () => {
 
         const result = await agent.invoke('What is 1 + 2?')
 
-        expect(result).toEqual(
-          new AgentResult({
-            stopReason: 'endTurn',
-            lastMessage: expect.objectContaining({
-              type: 'message',
-              role: 'assistant',
-              content: expect.arrayContaining([
-                expect.objectContaining({ type: 'textBlock', text: 'The answer is 3' }),
-              ]),
-            }),
-            metrics: expectLoopMetrics({ cycleCount: 2, toolNames: ['calc'] }),
+        expect(result.stopReason).toBe('endTurn')
+        expect(result.lastMessage).toEqual(
+          expect.objectContaining({
+            type: 'message',
+            role: 'assistant',
+            content: expect.arrayContaining([expect.objectContaining({ type: 'textBlock', text: 'The answer is 3' })]),
           })
         )
+        expect(result.metrics).toEqual(expectLoopMetrics({ cycleCount: 2, toolNames: ['calc'] }))
+        expect(result.traces).toHaveLength(2)
+        expect(result.traces[0]!.name).toBe('Cycle 1')
+        expect(result.traces[1]!.name).toBe('Cycle 2')
+        // First cycle has model stream + tool call
+        const toolTrace = result.traces[0]!.children.find((c) => c.name === 'Tool: calc')
+        expect(toolTrace).toBeDefined()
       })
     })
 

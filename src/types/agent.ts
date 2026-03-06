@@ -18,6 +18,7 @@ import type {
   AgentResultEvent,
 } from '../hooks/events.js'
 import type { z } from 'zod'
+import type { LocalTrace } from '../telemetry/tracer.js'
 import { AgentMetrics } from '../telemetry/meter.js'
 
 /**
@@ -64,14 +65,22 @@ export class AgentResult {
    */
   readonly metrics: AgentMetrics
 
+  /**
+   * In-memory execution traces collected during the agent loop.
+   * Provides a timing tree of cycles, model calls, and tool calls.
+   */
+  readonly traces: LocalTrace[]
+
   constructor(data: {
     stopReason: StopReason
     lastMessage: Message
     structuredOutput?: z.output<z.ZodType>
     metrics?: AgentMetrics
+    traces?: LocalTrace[]
   }) {
     this.stopReason = data.stopReason
     this.lastMessage = data.lastMessage
+    this.traces = data.traces ?? []
     this.metrics = data.metrics ?? new AgentMetrics()
     if (data.structuredOutput !== undefined) {
       this.structuredOutput = data.structuredOutput

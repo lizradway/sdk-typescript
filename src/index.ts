@@ -192,3 +192,6 @@ export * as telemetry from './telemetry/index.js'
 
 // Local Metrics
 export { AgentMetrics } from './telemetry/meter.js'
+
+// Local Traces
+export { LocalTrace } from './telemetry/tracer.js'

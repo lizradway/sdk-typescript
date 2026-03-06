@@ -251,7 +251,7 @@ export class Agent implements AgentData {
     // Store structured output schema
     this._structuredOutputSchema = config?.structuredOutputSchema
 
-    // Initialize tracer - OTEL returns no-op tracer if not configured
+    // Initialize tracer - OTel returns no-op tracer if not configured
     this._tracer = new Tracer(config?.traceAttributes)
 
     this._initialized = false
@@ -492,6 +492,7 @@ export class Agent implements AgentData {
               lastMessage: modelResult.message,
               structuredOutput,
               metrics: this._loopMetrics,
+              traces: this._tracer.localTraces,
             })
             return result
           }
@@ -863,7 +864,7 @@ export class Agent implements AgentData {
         }
       }
 
-      // End tool span
+      // End tool span and its local trace
       this._tracer.endToolCallSpan(toolSpan, { toolResult, ...(error && { error }) })
 
       // End tool metrics tracking
