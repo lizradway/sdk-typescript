@@ -189,3 +189,4 @@ export { StructuredOutputException } from './structured-output/exceptions.js'
 
 // Telemetry
 export * as telemetry from './telemetry/index.js'
+export { LocalTrace } from './telemetry/tracer.js'
