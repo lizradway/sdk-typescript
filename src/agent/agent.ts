@@ -251,7 +251,7 @@ export class Agent implements AgentData {
     // Store structured output schema
     this._structuredOutputSchema = config?.structuredOutputSchema
 
-    // Initialize tracer - OTel returns no-op tracer if not configured
+    // Initialize tracer - OTEL returns no-op tracer if not configured
     this._tracer = new Tracer(config?.traceAttributes)
 
     this._initialized = false
@@ -866,11 +866,10 @@ export class Agent implements AgentData {
       // End tool span
       this._tracer.endToolCallSpan(toolSpan, { toolResult, ...(error && { error }) })
 
-      // Record tool metrics
-      const toolDuration = Date.now() - toolStartTime
-      this._loopMetrics.addToolUsage({
+      // End tool metrics tracking
+      this._loopMetrics.endToolCall({
         tool: toolUse,
-        duration: toolDuration,
+        duration: Date.now() - toolStartTime,
         success: toolResult.status === 'success',
       })
 
