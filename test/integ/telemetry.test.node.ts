@@ -714,88 +714,57 @@ describe.sequential('Telemetry Integration', () => {
       expect(attr(customSpans[0]!, 'custom.key')).toBe('custom-value')
     })
 
-    it('captures spans when user registers their own NodeTracerProvider without setupTracer', async () => {
+    // The OTel global tracer provider can only be set once per process via register().
+    // Subsequent register() calls are no-ops and emit a warning. All spans always
+    // land in the first registered provider.
+
+    it('ignores later register() calls — spans stay in the first registered provider', async () => {
       const userExporter = new InMemorySpanExporter()
       const userProvider = new NodeTracerProvider()
       userProvider.addSpanProcessor(new SimpleSpanProcessor(userExporter))
-      userProvider.register()
+      userProvider.register() // no-op: global provider already set in beforeAll
 
       const tracer = telemetry.getTracer()
       const span = tracer.startSpan('user-provider-span')
       span.setAttribute('source', 'custom-provider')
       span.end()
 
-      await userProvider.forceFlush()
-      const spans = userExporter.getFinishedSpans()
-      const userSpan = spans.find((s) => s.name === 'user-provider-span')
+      // Span lands in the original shared provider, not the user's
+      const spans = await flush()
+      const sharedSpan = spans.find((s) => s.name === 'user-provider-span')
+      expect(sharedSpan).toBeDefined()
+      expect(sharedSpan!.attributes['source']).toBe('custom-provider')
 
-      expect(userSpan).toBeDefined()
-      expect(userSpan!.attributes['source']).toBe('custom-provider')
-
-      // Re-register the shared test provider so subsequent tests aren't affected
-      provider.register()
-    })
-
-    it('uses the last registered provider when both setupTracer and manual register are called', async () => {
-      // setupTracer registered the shared provider first, then user registers theirs
-      const userExporter = new InMemorySpanExporter()
-      const userProvider = new NodeTracerProvider()
-      userProvider.addSpanProcessor(new SimpleSpanProcessor(userExporter))
-      userProvider.register()
-
-      const tracer = telemetry.getTracer()
-      const span = tracer.startSpan('both-providers-span')
-      span.end()
-
+      // The user's exporter never receives the span
       await userProvider.forceFlush()
       const userSpans = userExporter.getFinishedSpans()
-      const capturedSpan = userSpans.find((s) => s.name === 'both-providers-span')
-
-      // Span lands in the user's provider since it registered last
-      expect(capturedSpan).toBeDefined()
-
-      // The shared test exporter should NOT have this span
-      await provider.forceFlush()
-      const sharedSpans = exporter.getFinishedSpans()
-      const leakedSpan = sharedSpans.find((s) => s.name === 'both-providers-span')
-      expect(leakedSpan).toBeUndefined()
-
-      // Restore shared provider for subsequent tests
-      provider.register()
+      expect(userSpans.find((s) => s.name === 'user-provider-span')).toBeUndefined()
     })
 
-    it('uses setupTracer provider when it registers after a user provider', async () => {
-      // User registers their own provider first
-      const userExporter = new InMemorySpanExporter()
-      const userProvider = new NodeTracerProvider()
-      userProvider.addSpanProcessor(new SimpleSpanProcessor(userExporter))
-      userProvider.register()
+    it('all spans land in the first registered provider even when multiple providers call register()', async () => {
+      const exporterA = new InMemorySpanExporter()
+      const providerA = new NodeTracerProvider()
+      providerA.addSpanProcessor(new SimpleSpanProcessor(exporterA))
+      providerA.register() // no-op
 
-      // Then a second provider registers, overriding the user's
-      const setupExporter = new InMemorySpanExporter()
-      const setupProvider = new NodeTracerProvider()
-      setupProvider.addSpanProcessor(new SimpleSpanProcessor(setupExporter))
-      setupProvider.register()
+      const exporterB = new InMemorySpanExporter()
+      const providerB = new NodeTracerProvider()
+      providerB.addSpanProcessor(new SimpleSpanProcessor(exporterB))
+      providerB.register() // no-op
 
       const tracer = telemetry.getTracer()
-      const span = tracer.startSpan('reverse-order-span')
+      const span = tracer.startSpan('multi-register-span')
       span.end()
 
-      await setupProvider.forceFlush()
-      const setupSpans = setupExporter.getFinishedSpans()
-      const capturedSpan = setupSpans.find((s) => s.name === 'reverse-order-span')
+      // Span lands in the original shared provider
+      const spans = await flush()
+      expect(spans.find((s) => s.name === 'multi-register-span')).toBeDefined()
 
-      // Span lands in the later provider since it registered last
-      expect(capturedSpan).toBeDefined()
-
-      // The user's provider should NOT have this span
-      await userProvider.forceFlush()
-      const userSpans = userExporter.getFinishedSpans()
-      const leakedSpan = userSpans.find((s) => s.name === 'reverse-order-span')
-      expect(leakedSpan).toBeUndefined()
-
-      // Restore shared provider for subsequent tests
-      provider.register()
+      // Neither late provider receives the span
+      await providerA.forceFlush()
+      await providerB.forceFlush()
+      expect(exporterA.getFinishedSpans().find((s) => s.name === 'multi-register-span')).toBeUndefined()
+      expect(exporterB.getFinishedSpans().find((s) => s.name === 'multi-register-span')).toBeUndefined()
     })
 
     it('creates custom spans that nest under agent spans via context propagation', async () => {
