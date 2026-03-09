@@ -34,6 +34,61 @@ import { jsonReplacer } from './json.js'
 import { getServiceName, getTracer } from './config.js'
 
 /**
+ * JSON-serializable representation of LocalTrace.
+ */
+interface LocalTraceData {
+  /**
+   * Unique identifier for this trace.
+   */
+  id: string
+
+  /**
+   * Display name for this trace.
+   */
+  name: string
+
+  /**
+   * Raw name before formatting.
+   */
+  rawName: string | null
+
+  /**
+   * Parent trace identifier.
+   */
+  parentId: string | null
+
+  /**
+   * Start time in milliseconds since epoch.
+   */
+  startTime: number
+
+  /**
+   * End time in milliseconds since epoch.
+   */
+  endTime: number | null
+
+  /**
+   * Duration in milliseconds.
+   */
+  duration: number
+
+  /**
+   * Child traces.
+   */
+  children: LocalTraceData[]
+
+  /**
+   * Metadata associated with this trace.
+   */
+  metadata: Record<string, unknown>
+
+  /**
+   * Message associated with this trace.
+   */
+  message: Message | null
+}
+
+/**
  * Execution trace for performance analysis.
  * Tracks timing and hierarchy of operations within the agent loop.
  * Fields default to null for JSON serialization compatibility.
@@ -119,8 +174,9 @@ export class LocalTrace {
 
   /**
    * Custom JSON serialization for console.log and JSON.stringify.
+   * Returns a JSON-safe representation of the trace hierarchy.
    */
-  toJSON(): Record<string, unknown> {
+  toJSON(): LocalTraceData {
     return {
       id: this.id,
       name: this.name,
@@ -129,7 +185,7 @@ export class LocalTrace {
       startTime: this.startTime,
       endTime: this.endTime,
       duration: this.duration,
-      children: this.children,
+      children: this.children.map((child) => child.toJSON()),
       metadata: this.metadata,
       message: this.message,
     }
