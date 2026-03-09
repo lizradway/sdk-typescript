@@ -173,8 +173,7 @@ export class LocalTrace {
   }
 
   /**
-   * Custom JSON serialization for console.log and JSON.stringify.
-   * Returns a JSON-safe representation of the trace hierarchy.
+   * Serializes trace hierarchy to JSON.
    */
   toJSON(): LocalTraceData {
     return {
@@ -210,23 +209,11 @@ interface LocalTraceState {
 /**
  * Manages both OpenTelemetry spans and local execution traces for agent operations.
  *
- *
- *
- * To create nested spans, use context.with() to set the parent span as active:
- * ```typescript
- * const parent = tracer.startAgentSpan({ ... })
- * context.with(trace.setSpan(context.active(), parent), () => {
- *   const child = tracer.startModelInvokeSpan({ messages }) // auto-parents to parent
- * })
- * ```
- *
  * OTel spans are exported to external observability backends (Jaeger, X-Ray, etc.)
  * when configured via setupTracer(). Local traces are lightweight, in-memory timing
  * trees that are always collected regardless of OTel configuration and returned
  * in AgentResult.traces for programmatic access.
  *
- * Uses a fully stateful approach via OpenTelemetry's context propagation.
- * Parent-child relationships are established automatically through context.active().
  */
 export class Tracer {
   /**
@@ -357,12 +344,6 @@ export class Tracer {
    * @param span - The span to end, or null if span creation failed
    * @param options - Options for ending the span including response, error, and usage data
    */
-  /**
-   * End an agent invocation span.
-   *
-   * @param span - The span to end, or null if span creation failed
-   * @param options - Options for ending the span including response, error, and usage data
-   */
   endAgentSpan(span: Span | null, options: EndAgentSpanOptions = {}): void {
     // Clear stale state from any previous invocation
     this._agentSpan = undefined
@@ -388,12 +369,6 @@ export class Tracer {
     }
   }
 
-  /**
-   * Start a model invocation span.
-   * Parents to the current active span from context.active().
-   *
-   * @param options - Options for starting the model invocation span
-   */
   /**
    * Start a model invocation span.
    * Parents to the current active span from context.active().
@@ -428,12 +403,6 @@ export class Tracer {
     }
   }
 
-  /**
-   * End a model invocation span.
-   *
-   * @param span - The span to end, or null if span creation failed
-   * @param options - Options for ending the span including usage, metrics, error, and output
-   */
   /**
    * End a model invocation span.
    *
@@ -531,12 +500,6 @@ export class Tracer {
    * @param span - The span to end, or null if span creation failed
    * @param options - Options for ending the tool call span
    */
-  /**
-   * End a tool call span.
-   *
-   * @param span - The span to end, or null if span creation failed
-   * @param options - Options for ending the tool call span
-   */
   endToolCallSpan(span: Span | null, options: EndToolCallSpanOptions = {}): void {
     // End local tool trace
     if (this._localtrace.currentTool) {
@@ -600,12 +563,6 @@ export class Tracer {
    *
    * @param options - Options for starting the agent loop span
    */
-  /**
-   * Start an agent loop cycle span.
-   * Parents to the current active span from context.active().
-   *
-   * @param options - Options for starting the agent loop span
-   */
   startAgentLoopSpan(options: StartAgentLoopSpanOptions): Span | null {
     const { cycleId, messages } = options
 
@@ -631,12 +588,6 @@ export class Tracer {
     }
   }
 
-  /**
-   * End an agent loop cycle span.
-   *
-   * @param span - The span to end, or null if span creation failed
-   * @param options - Options for ending the agent loop span
-   */
   /**
    * End an agent loop cycle span.
    *
