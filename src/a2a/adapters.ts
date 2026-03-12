@@ -7,18 +7,10 @@
 import type { Part, FileWithBytes, FileWithUri } from '@a2a-js/sdk'
 import type { ContentBlock } from '../types/messages.js'
 import { TextBlock } from '../types/messages.js'
-import type { ImageFormat, DocumentFormat, VideoFormat, MediaFormats } from '../types/media.js'
-import { ImageBlock, VideoBlock, DocumentBlock, decodeBase64, encodeBase64, MIME_TYPES } from '../types/media.js'
+import type { ImageFormat, DocumentFormat, VideoFormat } from '../mime.js'
+import { toMimeType, toMediaFormat } from '../mime.js'
+import { ImageBlock, VideoBlock, DocumentBlock, decodeBase64, encodeBase64 } from '../types/media.js'
 import { logger } from '../logging/logger.js'
-
-// Reverse lookup: MIME type → canonical format, built from the single source of truth in media.ts.
-// Sorted by format name length so aliases (jpg, mpg) are inserted first and overwritten by
-// canonical forms (jpeg, mpeg).
-const MIME_TO_FORMAT: ReadonlyMap<string, MediaFormats> = new Map(
-  Object.entries(MIME_TYPES)
-    .sort(([a], [b]) => a.length - b.length)
-    .map(([format, mime]) => [mime, format as MediaFormats])
-)
 
 /**
  * Converts A2A protocol parts to Strands SDK content blocks.
@@ -151,8 +143,8 @@ function _getFormat(mimeType: string | undefined, fileType: string): string {
 
   const lower = mimeType.toLowerCase()
 
-  // Use the reverse lookup from MIME_TYPES (handles complex types like application/vnd.ms-excel → xls)
-  const known = MIME_TO_FORMAT.get(lower)
+  // Use the reverse lookup (handles complex types like application/vnd.ms-excel → xls)
+  const known = toMediaFormat(lower)
   if (known) {
     return known
   }
@@ -172,7 +164,7 @@ function _getFormat(mimeType: string | undefined, fileType: string): string {
  * @returns A2A FilePart, or undefined if the source type is unsupported
  */
 function _mediaBlockToFilePart(block: ImageBlock | VideoBlock): Part | undefined {
-  const mimeType = MIME_TYPES[block.format]
+  const mimeType = toMimeType(block.format)!
 
   if (block.source.type === 'imageSourceBytes' || block.source.type === 'videoSourceBytes') {
     return { kind: 'file', file: { bytes: encodeBase64(block.source.bytes), mimeType } }
@@ -192,7 +184,7 @@ function _mediaBlockToFilePart(block: ImageBlock | VideoBlock): Part | undefined
  * @returns A2A FilePart, or undefined if the source type is unsupported
  */
 function _documentBlockToFilePart(block: DocumentBlock): Part | undefined {
-  const mimeType = MIME_TYPES[block.format]
+  const mimeType = toMimeType(block.format)!
 
   if (block.source.type === 'documentSourceBytes') {
     return { kind: 'file', file: { bytes: encodeBase64(block.source.bytes), mimeType, name: block.name } }
