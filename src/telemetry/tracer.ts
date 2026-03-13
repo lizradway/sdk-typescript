@@ -38,6 +38,10 @@ import type {
   StartModelInvokeSpanOptions,
   StartToolCallSpanOptions,
   StartAgentLoopSpanOptions,
+  StartMultiAgentSpanOptions,
+  EndMultiAgentSpanOptions,
+  StartNodeSpanOptions,
+  EndNodeSpanOptions,
   Usage,
   Metrics,
 } from './types.js'
@@ -336,6 +340,98 @@ export class Tracer {
       logger.warn(`error=<${err}> | failed to end tool call span`)
     }
   }
+  /**
+   * Start a multi-agent orchestration span.
+   * Parents to the current active span from context.active().
+   *
+   * @param options - Options for starting the multi-agent span
+   * @returns The span, or null if span creation failed
+   */
+  startMultiAgentSpan(options: StartMultiAgentSpanOptions): Span | null {
+    const { orchestratorId, orchestratorType, input, traceAttributes } = options
+
+    try {
+      const spanName = `invoke_${orchestratorType} ${orchestratorId}`
+      const attributes: Record<string, AttributeValue> = {
+        ...this._getCommonAttributes(`invoke_${orchestratorType}`),
+        'gen_ai.orchestrator.id': orchestratorId,
+        'gen_ai.orchestrator.type': orchestratorType,
+        name: spanName,
+      }
+      if (input) attributes['gen_ai.orchestrator.input'] = input
+
+      const mergedAttributes = { ...attributes, ...this._traceAttributes, ...traceAttributes }
+      return this._startSpan({ name: spanName, attributes: mergedAttributes, spanKind: SpanKind.INTERNAL })
+    } catch (error) {
+      logger.warn(`error=<${error}> | failed to start multi-agent span`)
+      return null
+    }
+  }
+
+  /**
+   * End a multi-agent orchestration span.
+   *
+   * @param span - The span to end, or null if span creation failed
+   * @param options - Options for ending the span including duration and error
+   */
+  endMultiAgentSpan(span: Span | null, options: EndMultiAgentSpanOptions = {}): void {
+    if (!span) return
+
+    try {
+      const attributes: Record<string, AttributeValue> = {}
+      if (options.duration !== undefined) attributes['gen_ai.orchestrator.duration'] = options.duration
+
+      this._endSpan(span, attributes, options.error)
+    } catch (err) {
+      logger.warn(`error=<${err}> | failed to end multi-agent span`)
+    }
+  }
+
+  /**
+   * Start a node execution span.
+   * Parents to the current active span from context.active().
+   *
+   * @param options - Options for starting the node span
+   * @returns The span, or null if span creation failed
+   */
+  startNodeSpan(options: StartNodeSpanOptions): Span | null {
+    const { nodeId, nodeType } = options
+
+    try {
+      const spanName = `node ${nodeId}`
+      const attributes: Record<string, AttributeValue> = {
+        'gen_ai.node.id': nodeId,
+        'gen_ai.node.type': nodeType,
+        name: spanName,
+      }
+
+      return this._startSpan({ name: spanName, attributes, spanKind: SpanKind.INTERNAL })
+    } catch (error) {
+      logger.warn(`error=<${error}> | failed to start node span`)
+      return null
+    }
+  }
+
+  /**
+   * End a node execution span.
+   *
+   * @param span - The span to end, or null if span creation failed
+   * @param options - Options for ending the span including status, duration, and error
+   */
+  endNodeSpan(span: Span | null, options: EndNodeSpanOptions = {}): void {
+    if (!span) return
+
+    try {
+      const attributes: Record<string, AttributeValue> = {}
+      if (options.status) attributes['gen_ai.node.status'] = options.status
+      if (options.duration !== undefined) attributes['gen_ai.node.duration'] = options.duration
+
+      this._endSpan(span, attributes, options.error)
+    } catch (err) {
+      logger.warn(`error=<${err}> | failed to end node span`)
+    }
+  }
+
   /**
    * Runs a callback with the given span set as the active OpenTelemetry context.
    * Downstream code (e.g., MCP clients) can read the span from context.active()

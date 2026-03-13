@@ -107,3 +107,49 @@ export interface EndAgentLoopSpanOptions {
   /** Error that caused the loop cycle to fail. */
   error?: Error
 }
+
+/**
+ * Options for starting a multi-agent orchestration span.
+ */
+export interface StartMultiAgentSpanOptions {
+  /** Unique identifier for the orchestrator instance. */
+  orchestratorId: string
+  /** Orchestration pattern type. */
+  orchestratorType: 'graph' | 'swarm'
+  /** Input task or prompt passed to the orchestrator. */
+  input?: string | undefined
+  /** Custom attributes to merge onto the span. */
+  traceAttributes?: Record<string, AttributeValue> | undefined
+}
+
+/**
+ * Options for ending a multi-agent orchestration span.
+ */
+export interface EndMultiAgentSpanOptions {
+  /** Error that caused the orchestration to fail. */
+  error?: Error | undefined
+  /** Total duration of the orchestration in milliseconds. */
+  duration?: number | undefined
+}
+
+/**
+ * Options for starting a node execution span.
+ */
+export interface StartNodeSpanOptions {
+  /** Unique identifier for the node. */
+  nodeId: string
+  /** Node type identifier (e.g., 'agentNode', 'multiAgentNode'). */
+  nodeType: string
+}
+
+/**
+ * Options for ending a node execution span.
+ */
+export interface EndNodeSpanOptions {
+  /** Final status of the node execution. */
+  status?: string | undefined
+  /** Duration of the node execution in milliseconds. */
+  duration?: number | undefined
+  /** Error that caused the node execution to fail. */
+  error?: Error | undefined
+}

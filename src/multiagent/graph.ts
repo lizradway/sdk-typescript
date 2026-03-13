@@ -25,6 +25,8 @@ import {
 import type { EdgeDefinition } from './edge.js'
 import { Edge } from './edge.js'
 import { Queue } from './queue.js'
+import { Tracer } from '../telemetry/tracer.js'
+import { MultiAgentMeter } from '../telemetry/meter.js'
 
 /**
  * Runtime configuration for graph execution.
@@ -94,6 +96,8 @@ export class Graph implements MultiAgentBase {
   private readonly _pluginRegistry: MultiAgentPluginRegistry
   private readonly _hookRegistry: HookRegistryImplementation
   private readonly _sources: Node[]
+  private readonly _tracer: Tracer
+  private readonly _meter: MultiAgentMeter
   private _initialized: boolean
 
   constructor(options: GraphOptions) {
@@ -114,6 +118,8 @@ export class Graph implements MultiAgentBase {
 
     this._hookRegistry = new HookRegistryImplementation()
     this._pluginRegistry = new MultiAgentPluginRegistry(plugins)
+    this._tracer = new Tracer()
+    this._meter = new MultiAgentMeter()
     this._initialized = false
   }
 
@@ -187,8 +193,15 @@ export class Graph implements MultiAgentBase {
     const targets = [...this._sources]
     const streams = new Map<string, Promise<void>>()
 
+    const multiAgentSpan = this._tracer.startMultiAgentSpan({
+      orchestratorId: this.id,
+      orchestratorType: 'graph',
+      input: typeof input === 'string' ? input : undefined,
+    })
+
     yield new BeforeMultiAgentInvocationEvent({ orchestrator: this, state })
 
+    let caughtError: Error | undefined
     try {
       while (targets.length > 0 || streams.size > 0) {
         while (targets.length > 0 && streams.size < this.config.maxConcurrency) {
@@ -197,7 +210,7 @@ export class Graph implements MultiAgentBase {
           this._checkSteps(state)
           state.steps++
 
-          streams.set(node.id, this._streamNode(node, input, state, queue))
+          streams.set(node.id, this._streamNode(node, input, state, queue, multiAgentSpan))
         }
 
         await queue.wait()
@@ -232,17 +245,25 @@ export class Graph implements MultiAgentBase {
           }
         }
       }
+    } catch (error) {
+      caughtError = error instanceof Error ? error : new Error(String(error))
+      throw error
     } finally {
       queue.dispose()
       await Promise.allSettled(streams.values())
       yield new AfterMultiAgentInvocationEvent({ orchestrator: this, state })
     }
 
+    const duration = Date.now() - state.startTime
     const result = new MultiAgentResult({
       results: state.results,
       content: this._resolveContent(state),
-      duration: Date.now() - state.startTime,
+      duration,
     })
+
+    this._meter.recordMultiAgentDuration(duration, this.id)
+    this._tracer.endMultiAgentSpan(multiAgentSpan, { duration, ...(caughtError && { error: caughtError }) })
+
     yield new MultiAgentResultEvent({ result })
     return result
   }
@@ -250,8 +271,18 @@ export class Graph implements MultiAgentBase {
   /**
    * Executes a single node, pushing streaming events to the shared queue in real-time.
    */
-  private async _streamNode(node: Node, input: InvokeArgs, state: MultiAgentState, queue: Queue): Promise<void> {
+  private async _streamNode(
+    node: Node,
+    input: InvokeArgs,
+    state: MultiAgentState,
+    queue: Queue,
+    parentSpan: import('@opentelemetry/api').Span | null
+  ): Promise<void> {
     const nodeState = state.node(node.id)!
+
+    const nodeSpan = this._tracer.withSpanContext(parentSpan, () =>
+      this._tracer.startNodeSpan({ nodeId: node.id, nodeType: node.type })
+    )
 
     const beforeEvent = new BeforeNodeCallEvent({ orchestrator: this, state, nodeId: node.id })
     await queue.send({ type: 'event', node, event: beforeEvent })
@@ -272,6 +303,7 @@ export class Graph implements MultiAgentBase {
         node,
         event: new AfterNodeCallEvent({ orchestrator: this, state, nodeId: node.id }),
       })
+      this._tracer.endNodeSpan(nodeSpan, { status: Status.CANCELLED, duration: 0 })
       queue.push({ type: 'result', node, result })
       return
     }
@@ -279,13 +311,16 @@ export class Graph implements MultiAgentBase {
     try {
       const nodeInput = this._resolveNodeInput(node, input, state)
 
-      const gen = node.stream(nodeInput, state)
-      let next = await gen.next()
+      const gen = this._tracer.withSpanContext(nodeSpan, () => node.stream(nodeInput, state))
+      let next = await this._tracer.withSpanContext(nodeSpan, () => gen.next())
       while (!next.done) {
         await queue.send({ type: 'event', node, event: next.value })
-        next = await gen.next()
+        next = await this._tracer.withSpanContext(nodeSpan, () => gen.next())
       }
-      queue.push({ type: 'result', node, result: next.value })
+      const result = next.value
+      this._meter.recordNodeExecution(result.duration, this.id, node.id)
+      this._tracer.endNodeSpan(nodeSpan, { status: result.status, duration: result.duration })
+      queue.push({ type: 'result', node, result })
 
       await queue.send({
         type: 'event',
@@ -293,6 +328,9 @@ export class Graph implements MultiAgentBase {
         event: new AfterNodeCallEvent({ orchestrator: this, state, nodeId: node.id }),
       })
     } catch (error) {
+      const nodeError = error instanceof Error ? error : new Error(String(error))
+      this._tracer.endNodeSpan(nodeSpan, { error: nodeError })
+
       await queue.send({
         type: 'event',
         node,
@@ -300,13 +338,13 @@ export class Graph implements MultiAgentBase {
           orchestrator: this,
           state,
           nodeId: node.id,
-          error: error instanceof Error ? error : new Error(String(error)),
+          error: nodeError,
         }),
       })
       queue.push({
         type: 'error',
         node,
-        error: error instanceof Error ? error : new Error(String(error)),
+        error: nodeError,
       })
     }
   }

@@ -162,6 +162,7 @@ export class AgentNode extends Node {
       return {
         content: next.value.lastMessage.content,
         ...('structuredOutput' in next.value && { structuredOutput: next.value.structuredOutput }),
+        ...(next.value.metrics?.accumulatedUsage && { usage: next.value.metrics.accumulatedUsage }),
       }
     } finally {
       loadSnapshot(this._agent, snapshot)

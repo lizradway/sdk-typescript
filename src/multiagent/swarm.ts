@@ -24,6 +24,8 @@ import {
   MultiAgentResultEvent,
   NodeCancelEvent,
 } from './events.js'
+import { Tracer } from '../telemetry/tracer.js'
+import { MultiAgentMeter } from '../telemetry/meter.js'
 
 /**
  * Runtime configuration for swarm execution.
@@ -102,6 +104,8 @@ export class Swarm implements MultiAgentBase {
   readonly config: Required<SwarmConfig>
   private readonly _pluginRegistry: MultiAgentPluginRegistry
   private readonly _hookRegistry: HookRegistryImplementation
+  private readonly _tracer: Tracer
+  private readonly _meter: MultiAgentMeter
   readonly start: AgentNode
   private readonly _handoffSchema: z.ZodType<HandoffResult>
   private _initialized: boolean
@@ -123,6 +127,8 @@ export class Swarm implements MultiAgentBase {
 
     this._hookRegistry = new HookRegistryImplementation()
     this._pluginRegistry = new MultiAgentPluginRegistry(plugins)
+    this._tracer = new Tracer()
+    this._meter = new MultiAgentMeter()
     this._initialized = false
   }
 
@@ -191,17 +197,24 @@ export class Swarm implements MultiAgentBase {
       structuredOutputSchema: this._handoffSchema,
     })
 
+    const multiAgentSpan = this._tracer.startMultiAgentSpan({
+      orchestratorId: this.id,
+      orchestratorType: 'swarm',
+      input: typeof input === 'string' ? input : undefined,
+    })
+
     yield new BeforeMultiAgentInvocationEvent({ orchestrator: this, state })
 
     let node = this.start
     let handoff: HandoffResult | undefined
+    let caughtError: Error | undefined
 
     try {
       while (state.steps < this.config.maxSteps) {
         state.steps++
 
         // Execute current node
-        const result = yield* this._streamNode(node, input, state, handoff)
+        const result = yield* this._streamNode(node, input, state, handoff, multiAgentSpan)
         handoff = result.structuredOutput as HandoffResult | undefined
         state.results.push(result)
 
@@ -213,20 +226,29 @@ export class Swarm implements MultiAgentBase {
         // Hand off to next agent
         const target = this.nodes.get(handoff.agentId)!
         yield new MultiAgentHandoffEvent({ source: node.id, targets: [target.id] })
+        this._meter.recordHandoff(this.id, node.id, target.id)
         logger.debug(`source=<${node.id}>, target=<${target.id}> | swarm handoff`)
         node = target
       }
 
       this._checkSteps(state)
+    } catch (error) {
+      caughtError = error instanceof Error ? error : new Error(String(error))
+      throw error
     } finally {
       yield new AfterMultiAgentInvocationEvent({ orchestrator: this, state })
     }
 
+    const duration = Date.now() - state.startTime
     const result = new MultiAgentResult({
       results: state.results,
       content: this._resolveContent(state),
-      duration: Date.now() - state.startTime,
+      duration,
     })
+
+    this._meter.recordMultiAgentDuration(duration, this.id)
+    this._tracer.endMultiAgentSpan(multiAgentSpan, { duration, ...(caughtError && { error: caughtError }) })
+
     yield new MultiAgentResultEvent({ result })
     return result
   }
@@ -235,9 +257,14 @@ export class Swarm implements MultiAgentBase {
     node: AgentNode,
     input: InvokeArgs,
     state: MultiAgentState,
-    handoff?: HandoffResult
+    handoff?: HandoffResult,
+    parentSpan?: import('@opentelemetry/api').Span | null
   ): AsyncGenerator<MultiAgentStreamEvent, NodeResult, undefined> {
     const nodeState = state.node(node.id)!
+
+    const nodeSpan = this._tracer.withSpanContext(parentSpan ?? null, () =>
+      this._tracer.startNodeSpan({ nodeId: node.id, nodeType: node.type })
+    )
 
     const beforeEvent = new BeforeNodeCallEvent({ orchestrator: this, state, nodeId: node.id })
     yield beforeEvent
@@ -249,27 +276,35 @@ export class Swarm implements MultiAgentBase {
       nodeState.results.push(result)
       yield new NodeCancelEvent({ nodeId: node.id, message })
       yield new AfterNodeCallEvent({ orchestrator: this, state, nodeId: node.id })
+      this._tracer.endNodeSpan(nodeSpan, { status: Status.CANCELLED, duration: 0 })
       return result
     }
 
     const nodeInput = this._resolveNodeInput(input, handoff)
 
     try {
-      const gen = node.stream(nodeInput, state)
-      let next = await gen.next()
+      const gen = this._tracer.withSpanContext(nodeSpan, () => node.stream(nodeInput, state))
+      let next = await this._tracer.withSpanContext(nodeSpan, () => gen.next())
       while (!next.done) {
         yield next.value
-        next = await gen.next()
+        next = await this._tracer.withSpanContext(nodeSpan, () => gen.next())
       }
 
+      const result = next.value
+      this._meter.recordNodeExecution(result.duration, this.id, node.id)
+      this._tracer.endNodeSpan(nodeSpan, { status: result.status, duration: result.duration })
+
       yield new AfterNodeCallEvent({ orchestrator: this, state, nodeId: node.id })
-      return next.value
+      return result
     } catch (error) {
+      const nodeError = error instanceof Error ? error : new Error(String(error))
+      this._tracer.endNodeSpan(nodeSpan, { error: nodeError })
+
       yield new AfterNodeCallEvent({
         orchestrator: this,
         state,
         nodeId: node.id,
-        error: error instanceof Error ? error : new Error(String(error)),
+        error: nodeError,
       })
       throw error
     }

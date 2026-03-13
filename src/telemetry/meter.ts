@@ -509,3 +509,75 @@ export class Meter {
     }
   }
 }
+
+/**
+ * Tracks OTEL metrics for multi-agent orchestration.
+ *
+ * Records orchestration-level duration, per-node duration and execution counts,
+ * and swarm handoff counts. When no OTEL MeterProvider is registered, all
+ * instruments are no-ops and add no overhead.
+ */
+export class MultiAgentMeter {
+  private readonly _otelMeter: OtelMeter
+  private readonly _otelMultiAgentDuration: Histogram
+  private readonly _otelNodeDuration: Histogram
+  private readonly _otelNodeExecutionCount: Counter
+  private readonly _otelHandoffCount: Counter
+
+  constructor() {
+    this._otelMeter = otelMetrics.getMeter(getServiceName())
+
+    this._otelMultiAgentDuration = this._otelMeter.createHistogram('gen_ai.multiagent.duration', {
+      description: 'Total multi-agent orchestration duration in milliseconds',
+      unit: 'ms',
+    })
+    this._otelNodeDuration = this._otelMeter.createHistogram('gen_ai.multiagent.node.duration', {
+      description: 'Per-node execution duration in milliseconds',
+      unit: 'ms',
+    })
+    this._otelNodeExecutionCount = this._otelMeter.createCounter('gen_ai.multiagent.node.execution.count', {
+      description: 'Number of node executions',
+    })
+    this._otelHandoffCount = this._otelMeter.createCounter('gen_ai.multiagent.handoff.count', {
+      description: 'Number of swarm handoffs',
+    })
+  }
+
+  /**
+   * Record the total duration of a multi-agent orchestration.
+   *
+   * @param duration - Duration in milliseconds
+   * @param orchestratorId - Unique identifier for the orchestrator
+   */
+  recordMultiAgentDuration(duration: number, orchestratorId: string): void {
+    this._otelMultiAgentDuration.record(duration, { 'orchestrator.id': orchestratorId })
+  }
+
+  /**
+   * Record a node execution and its duration.
+   *
+   * @param duration - Duration in milliseconds
+   * @param orchestratorId - Unique identifier for the orchestrator
+   * @param nodeId - Unique identifier for the node
+   */
+  recordNodeExecution(duration: number, orchestratorId: string, nodeId: string): void {
+    const attrs = { 'orchestrator.id': orchestratorId, 'node.id': nodeId }
+    this._otelNodeExecutionCount.add(1, attrs)
+    this._otelNodeDuration.record(duration, attrs)
+  }
+
+  /**
+   * Record a swarm handoff event.
+   *
+   * @param orchestratorId - Unique identifier for the orchestrator
+   * @param sourceId - Source agent id
+   * @param targetId - Target agent id
+   */
+  recordHandoff(orchestratorId: string, sourceId: string, targetId: string): void {
+    this._otelHandoffCount.add(1, {
+      'orchestrator.id': orchestratorId,
+      'node.id': sourceId,
+      'handoff.target': targetId,
+    })
+  }
+}
