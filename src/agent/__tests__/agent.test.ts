@@ -9,7 +9,6 @@ import {
   MaxTokensError,
   TextBlock,
   CachePointBlock,
-  AgentResult,
   Message,
   ToolUseBlock,
   ToolResultBlock,
@@ -24,6 +23,7 @@ import { BeforeInvocationEvent, BeforeToolsEvent } from '../../hooks/events.js'
 import { BedrockModel } from '../../models/bedrock.js'
 import { StructuredOutputException } from '../../structured-output/exceptions.js'
 import { expectLoopMetrics } from '../../__fixtures__/metrics-helpers.js'
+import { expectAgentResult } from '../../__fixtures__/agent-helpers.js'
 
 describe('Agent', () => {
   describe('stream', () => {
@@ -66,14 +66,16 @@ describe('Agent', () => {
         const { result } = await collectGenerator(agent.stream('Test prompt'))
 
         expect(result).toEqual(
-          new AgentResult({
+          expectAgentResult({
             stopReason: 'endTurn',
-            lastMessage: expect.objectContaining({
-              role: 'assistant',
-              content: expect.arrayContaining([expect.objectContaining({ type: 'textBlock', text: 'Hello' })]),
-            }),
-            metrics: expectLoopMetrics({ cycleCount: 1 }),
+            messageText: 'Hello',
+            cycleCount: 1,
+            traceCount: 1,
           })
+        )
+        // Verify trace structure
+        expect(result.traces?.[0]?.children).toEqual(
+          expect.arrayContaining([expect.objectContaining({ name: 'stream_messages' })])
         )
       })
     })
@@ -194,14 +196,11 @@ describe('Agent', () => {
         const result = await agent.invoke('Test prompt')
 
         expect(result).toEqual(
-          new AgentResult({
+          expectAgentResult({
             stopReason: 'endTurn',
-            lastMessage: expect.objectContaining({
-              type: 'message',
-              role: 'assistant',
-              content: expect.arrayContaining([expect.objectContaining({ type: 'textBlock', text: 'Response text' })]),
-            }),
-            metrics: expectLoopMetrics({ cycleCount: 1 }),
+            messageText: 'Response text',
+            cycleCount: 1,
+            traceCount: 1,
           })
         )
       })
@@ -213,7 +212,7 @@ describe('Agent', () => {
         const result = await agent.invoke('Test')
 
         expect(result).toEqual(
-          new AgentResult({
+          expect.objectContaining({
             stopReason: 'endTurn',
             lastMessage: expect.objectContaining({
               type: 'message',
@@ -257,21 +256,92 @@ describe('Agent', () => {
         const result = await agent.invoke('What is 1 + 2?')
 
         expect(result).toEqual(
-          new AgentResult({
+          expectAgentResult({
             stopReason: 'endTurn',
-            lastMessage: expect.objectContaining({
-              type: 'message',
-              role: 'assistant',
-              content: expect.arrayContaining([
-                expect.objectContaining({ type: 'textBlock', text: 'The answer is 3' }),
+            messageText: 'The answer is 3',
+            cycleCount: 2,
+            toolNames: ['calc'],
+            traceCount: 2,
+            usage: { inputTokens: 300, outputTokens: 80, totalTokens: 380 },
+          })
+        )
+        // Verify detailed trace children structure
+        expect(result.traces?.[0]?.children).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ name: 'stream_messages' }),
+            expect.objectContaining({ name: 'Tool: calc' }),
+          ])
+        )
+        expect(result.traces?.[1]?.children).toEqual(
+          expect.arrayContaining([expect.objectContaining({ name: 'stream_messages' })])
+        )
+      })
+
+      it('stores cycleId in trace metadata', async () => {
+        const model = new MockMessageModel()
+          .addTurn({ type: 'toolUseBlock', name: 'calc', toolUseId: 'tool-1', input: {} })
+          .addTurn({ type: 'textBlock', text: 'Done' })
+
+        const tool = createMockTool(
+          'calc',
+          () =>
+            new ToolResultBlock({
+              toolUseId: 'tool-1',
+              status: 'success' as const,
+              content: [new TextBlock('result')],
+            })
+        )
+
+        const agent = new Agent({ model, tools: [tool] })
+
+        const result = await agent.invoke('Test')
+
+        expect(result.traces).toEqual([
+          expect.objectContaining({
+            name: 'Cycle 1',
+            metadata: expect.objectContaining({ cycleId: 'cycle-1' }),
+          }),
+          expect.objectContaining({
+            name: 'Cycle 2',
+            metadata: expect.objectContaining({ cycleId: 'cycle-2' }),
+          }),
+        ])
+      })
+
+      it('stores tool metadata in trace children', async () => {
+        const model = new MockMessageModel()
+          .addTurn({ type: 'toolUseBlock', name: 'testTool', toolUseId: 'tool-abc123', input: {} })
+          .addTurn({ type: 'textBlock', text: 'Done' })
+
+        const tool = createMockTool(
+          'testTool',
+          () =>
+            new ToolResultBlock({
+              toolUseId: 'tool-abc123',
+              status: 'success' as const,
+              content: [new TextBlock('result')],
+            })
+        )
+
+        const agent = new Agent({ model, tools: [tool] })
+
+        const result = await agent.invoke('Test')
+
+        expect(result.traces).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              name: 'Cycle 1',
+              children: expect.arrayContaining([
+                expect.objectContaining({
+                  name: 'Tool: testTool',
+                  metadata: expect.objectContaining({
+                    toolUseId: 'tool-abc123',
+                    toolName: 'testTool',
+                  }),
+                }),
               ]),
             }),
-            metrics: expectLoopMetrics({
-              cycleCount: 2,
-              toolNames: ['calc'],
-              usage: { inputTokens: 300, outputTokens: 80, totalTokens: 380 },
-            }),
-          })
+          ])
         )
       })
     })
@@ -339,6 +409,53 @@ describe('Agent', () => {
             totalTime: expect.any(Number),
           },
         })
+      })
+
+      it('collects local traces for completed cycles when error occurs mid-run', async () => {
+        const model = new MockMessageModel()
+          .addTurn(
+            { type: 'toolUseBlock', name: 'testTool', toolUseId: 'tool-1', input: {} },
+            {
+              usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+            }
+          )
+          .addTurn(
+            { type: 'textBlock', text: 'Partial' },
+            {
+              stopReason: 'maxTokens',
+              usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100 },
+            }
+          )
+
+        const tool = createMockTool(
+          'testTool',
+          () =>
+            new ToolResultBlock({
+              toolUseId: 'tool-1',
+              status: 'success' as const,
+              content: [new TextBlock('Done')],
+            })
+        )
+
+        const agent = new Agent({ model, tools: [tool] })
+
+        const tracer = (agent as any)._tracer
+        await expect(agent.invoke('Test')).rejects.toThrow(MaxTokensError)
+
+        // Cycle 1 completed (tool use), cycle 2 errored (maxTokens)
+        expect(tracer.localTraces).toEqual([
+          expect.objectContaining({
+            name: 'Cycle 1',
+            children: [
+              expect.objectContaining({ name: 'stream_messages' }),
+              expect.objectContaining({ name: 'Tool: testTool' }),
+            ],
+          }),
+          expect.objectContaining({
+            name: 'Cycle 2',
+            children: [expect.objectContaining({ name: 'stream_messages' })],
+          }),
+        ])
       })
 
       it('tracks metrics when a hook throws an error', async () => {
@@ -429,8 +546,20 @@ describe('Agent', () => {
       const invokeResult = await agent1.invoke('Use tool')
       const { result: streamResult } = await collectGenerator(agent2.stream('Use tool'))
 
-      expect(invokeResult.stopReason).toBe(streamResult.stopReason)
-      expect(invokeResult.lastMessage).toEqual(streamResult.lastMessage)
+      expect(invokeResult).toEqual(
+        expect.objectContaining({
+          stopReason: streamResult.stopReason,
+          lastMessage: streamResult.lastMessage,
+          traces: streamResult.traces?.map((t) =>
+            expect.objectContaining({
+              name: t.name,
+              children: expect.arrayContaining(
+                Array(t.children.length).fill(expect.objectContaining({ name: expect.any(String) }))
+              ),
+            })
+          ),
+        })
+      )
     })
   })
 
@@ -439,10 +568,7 @@ describe('Agent', () => {
       const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Hello' })
       const agent = new Agent({ model })
 
-      const messages = agent.messages
-
-      expect(messages).toBeDefined()
-      expect(Array.isArray(messages)).toBe(true)
+      expect(agent.messages).toEqual([])
     })
 
     it('reflects conversation history after invoke', async () => {
@@ -451,13 +577,16 @@ describe('Agent', () => {
 
       await agent.invoke('Hello')
 
-      const messages = agent.messages
-      expect(messages.length).toBeGreaterThan(0)
-      expect(messages.length).toBe(2)
-      expect(messages[0]?.role).toBe('user')
-      expect(messages[0]?.content).toEqual([{ type: 'textBlock', text: 'Hello' }])
-      expect(messages[1]?.role).toBe('assistant')
-      expect(messages[1]?.content).toEqual([{ type: 'textBlock', text: 'Response' }])
+      expect(agent.messages).toEqual([
+        expect.objectContaining({
+          role: 'user',
+          content: [{ type: 'textBlock', text: 'Hello' }],
+        }),
+        expect.objectContaining({
+          role: 'assistant',
+          content: [{ type: 'textBlock', text: 'Response' }],
+        }),
+      ])
     })
   })
 

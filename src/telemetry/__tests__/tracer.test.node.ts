@@ -581,6 +581,40 @@ describe('Tracer', () => {
 
       expect(mockSpan.getEvents('gen_ai.user.message')).toHaveLength(1)
     })
+
+    it('creates local trace with cycleId in metadata', () => {
+      const tracer = new Tracer()
+
+      tracer.startAgentLoopSpan({ cycleId: 'cycle-123', messages: [] })
+
+      const traces = tracer.localTraces
+      expect(traces).toEqual([
+        expect.objectContaining({
+          name: 'Cycle 1',
+          metadata: expect.objectContaining({ cycleId: 'cycle-123' }),
+        }),
+      ])
+    })
+
+    it('stores unique cycleIds for multiple cycles', () => {
+      const tracer = new Tracer()
+
+      tracer.startAgentLoopSpan({ cycleId: 'cycle-abc', messages: [] })
+      tracer.endAgentLoopSpan(mockSpan)
+      tracer.startAgentLoopSpan({ cycleId: 'cycle-xyz', messages: [] })
+
+      const traces = tracer.localTraces
+      expect(traces).toEqual([
+        expect.objectContaining({
+          name: 'Cycle 1',
+          metadata: expect.objectContaining({ cycleId: 'cycle-abc' }),
+        }),
+        expect.objectContaining({
+          name: 'Cycle 2',
+          metadata: expect.objectContaining({ cycleId: 'cycle-xyz' }),
+        }),
+      ])
+    })
   })
 
   describe('endAgentLoopSpan', () => {
