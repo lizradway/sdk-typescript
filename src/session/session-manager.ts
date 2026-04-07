@@ -7,6 +7,15 @@ import { AfterInvocationEvent, AfterModelCallEvent, InitializedEvent, MessageAdd
 import { v7 as uuidV7 } from 'uuid'
 import { takeSnapshot, loadSnapshot } from '../agent/snapshot.js'
 import { logger } from '../logging/logger.js'
+import type { MultiAgentPlugin, MultiAgent } from '../multiagent/index.js'
+import { MultiAgentState } from '../multiagent/state.js'
+import {
+  takeSnapshot as takeMultiAgentSnapshot,
+  loadSnapshot as loadMultiAgentSnapshot,
+} from '../multiagent/snapshot.js'
+import { AfterMultiAgentInvocationEvent, BeforeMultiAgentInvocationEvent } from '../multiagent/events.js'
+import type { Graph } from '../multiagent/graph.js'
+import type { Swarm } from '../multiagent/swarm.js'
 
 /**
  * Controls when `snapshot_latest` is saved automatically.
@@ -20,11 +29,21 @@ import { logger } from '../logging/logger.js'
  *   just the latest.
  *
  * `SaveLatestStrategy` controls how frequently `snapshot_latest` is updated:
- * - `'invocation'`: after every agent invocation completes (default; balances durability and I/O)
- * - `'message'`: after every message added and after model calls with guardrail redactions (most durable, highest I/O)
+ * - `'invocation'`: after every agent or orchestrator invocation completes (default; balances durability and I/O)
+ * - `'message'`: after every message added and after model calls with guardrail redactions (agent only; most durable, highest I/O)
  * - `'trigger'`: only when a `snapshotTrigger` fires (or manually via `saveSnapshot`)
  */
 export type SaveLatestStrategy = 'message' | 'invocation' | 'trigger'
+
+/**
+ * Controls when `snapshot_latest` is saved for multi-agent orchestrators.
+ *
+ * Currently only `'invocation'` is supported. Additional strategies may be added
+ * in future releases as multi-agent persistence patterns evolve.
+ *
+ * - `'invocation'`: after every orchestrator invocation completes (default)
+ */
+export type MultiAgentSaveLatestStrategy = 'invocation'
 
 export interface SessionManagerConfig {
   /** Pluggable storage backends for snapshot persistence. Defaults to FileStorage in Node.js; required in browser environments. */
@@ -37,11 +56,16 @@ export interface SessionManagerConfig {
   saveLatestOn?: SaveLatestStrategy
   /** Callback invoked after each invocation to decide whether to create an immutable snapshot. */
   snapshotTrigger?: SnapshotTriggerCallback
+  /** When to save snapshot_latest for multi-agent orchestrators. Default: `'invocation'` (after each orchestrator invocation completes). See {@link MultiAgentSaveLatestStrategy} for details. */
+  multiAgentSaveLatestOn?: MultiAgentSaveLatestStrategy
 }
 
 /**
  * Manages session persistence for agents, enabling conversation state
  * to be saved and restored across invocations using pluggable storage backends.
+ *
+ * Also supports multi-agent orchestrators (Graph, Swarm) via the MultiAgentPlugin interface.
+ * Scope is auto-detected based on whether initAgent or initMultiAgent is called.
  *
  * @example
  * ```typescript
@@ -54,11 +78,13 @@ export interface SessionManagerConfig {
  * const agent = new Agent({ sessionManager: session })
  * ```
  */
-export class SessionManager implements Plugin {
+export class SessionManager implements Plugin, MultiAgentPlugin {
   private readonly _sessionId: string
   private readonly _storage: { snapshot: SnapshotStorage }
   private readonly _saveLatestOn: SaveLatestStrategy
   private readonly _snapshotTrigger?: SnapshotTriggerCallback | undefined
+  private readonly _multiAgentSaveLatestOn: MultiAgentSaveLatestStrategy
+  private _multiAgentRestoredIds = new Set<string>()
 
   /**
    * Unique identifier for this plugin.
@@ -71,6 +97,7 @@ export class SessionManager implements Plugin {
     this._sessionId = validateIdentifier(config.sessionId ?? 'default-session')
     this._storage = { snapshot: config.storage.snapshot }
     this._saveLatestOn = config.saveLatestOn ?? 'invocation'
+    this._multiAgentSaveLatestOn = config.multiAgentSaveLatestOn ?? 'invocation'
     this._snapshotTrigger = config.snapshotTrigger
   }
 
@@ -98,15 +125,23 @@ export class SessionManager implements Plugin {
     return { sessionId: this._sessionId, scope: 'agent', scopeId: agent.id }
   }
 
-  async saveSnapshot(params: { target: LocalAgent; isLatest: boolean }): Promise<void> {
-    const snapshot = takeSnapshot(params.target, { preset: 'session' })
+  /** Saves a snapshot of the target's current state. */
+  async saveSnapshot(params: { target: LocalAgent; isLatest: boolean }): Promise<void>
+  async saveSnapshot(params: { target: Graph | Swarm; state?: MultiAgentState; isLatest: boolean }): Promise<void>
+  async saveSnapshot(params: {
+    target: LocalAgent | Graph | Swarm
+    state?: MultiAgentState
+    isLatest: boolean
+  }): Promise<void> {
+    const isAgent = 'messages' in params.target
+    const snapshot = isAgent
+      ? takeSnapshot(params.target as LocalAgent, { preset: 'session' })
+      : takeMultiAgentSnapshot(params.target as Graph | Swarm, params.state)
     const snapshotId = params.isLatest ? 'latest' : uuidV7()
-    await this._storage.snapshot.saveSnapshot({
-      location: this._location(params.target),
-      snapshotId,
-      isLatest: params.isLatest,
-      snapshot,
-    })
+    const location = isAgent
+      ? this._location(params.target as LocalAgent)
+      : this._multiAgentLocation(params.target as MultiAgent)
+    await this._storage.snapshot.saveSnapshot({ location, snapshotId, isLatest: params.isLatest, snapshot })
   }
 
   /** Deletes all snapshots and manifests for this session from storage. */
@@ -114,15 +149,34 @@ export class SessionManager implements Plugin {
     await this._storage.snapshot.deleteSession({ sessionId: this._sessionId })
   }
 
-  /** Loads a snapshot from storage and restores it into the target agent. Returns false if no snapshot exists. */
-  async restoreSnapshot(params: { target: LocalAgent; snapshotId?: string }): Promise<boolean> {
+  /** Loads a snapshot from storage and restores it into the target. Returns false if no snapshot exists. */
+  async restoreSnapshot(params: { target: LocalAgent; snapshotId?: string }): Promise<boolean>
+  async restoreSnapshot(params: {
+    target: Graph | Swarm
+    state?: MultiAgentState
+    snapshotId?: string
+  }): Promise<boolean>
+  async restoreSnapshot(params: {
+    target: LocalAgent | Graph | Swarm
+    state?: MultiAgentState
+    snapshotId?: string
+  }): Promise<boolean> {
+    const isAgent = 'messages' in params.target
+    const location = isAgent
+      ? this._location(params.target as LocalAgent)
+      : this._multiAgentLocation(params.target as MultiAgent)
     const snapshot = await this._storage.snapshot.loadSnapshot({
-      location: this._location(params.target),
+      location,
       ...(params.snapshotId !== undefined && { snapshotId: params.snapshotId }),
     })
 
     if (!snapshot) return false
-    loadSnapshot(params.target, snapshot)
+
+    if (isAgent) {
+      loadSnapshot(params.target as LocalAgent, snapshot)
+    } else {
+      loadMultiAgentSnapshot(params.target as Graph | Swarm, snapshot, params.state)
+    }
     return true
   }
 
@@ -177,5 +231,46 @@ export class SessionManager implements Plugin {
         snapshot,
       }),
     ])
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-agent
+  // ---------------------------------------------------------------------------
+
+  /** Initializes the multi-agent plugin by registering orchestrator lifecycle hooks. */
+  public initMultiAgent(orchestrator: MultiAgent): void {
+    orchestrator.addHook(BeforeMultiAgentInvocationEvent, async (event) => {
+      await this._onBeforeMultiAgentInvocation(event)
+    })
+    orchestrator.addHook(AfterMultiAgentInvocationEvent, async (event) => {
+      await this._onAfterMultiAgentInvocation(event)
+    })
+  }
+
+  private _multiAgentLocation(orchestrator: MultiAgent): SnapshotLocation {
+    return { sessionId: this._sessionId, scope: 'multiAgent', scopeId: orchestrator.id }
+  }
+
+  /** Restores orchestrator state on first invocation (loads snapshot from storage once per orchestrator, then no-ops). */
+  private async _onBeforeMultiAgentInvocation(event: BeforeMultiAgentInvocationEvent): Promise<void> {
+    if (this._multiAgentRestoredIds.has(event.orchestrator.id)) return
+    this._multiAgentRestoredIds.add(event.orchestrator.id)
+
+    const location = this._multiAgentLocation(event.orchestrator)
+    const snapshot = await this._storage.snapshot.loadSnapshot({ location })
+    if (!snapshot) return
+
+    loadMultiAgentSnapshot(event.orchestrator as Graph | Swarm, snapshot, event.state)
+  }
+
+  /** Saves latest orchestrator snapshot after invocation completes. */
+  private async _onAfterMultiAgentInvocation(event: AfterMultiAgentInvocationEvent): Promise<void> {
+    if (this._multiAgentSaveLatestOn === 'invocation') {
+      await this.saveSnapshot({
+        target: event.orchestrator as Graph | Swarm,
+        state: event.state,
+        isLatest: true,
+      })
+    }
   }
 }
