@@ -1,4 +1,11 @@
-import type { BeforeToolCallEvent, AfterModelCallEvent } from '../hooks/events.js'
+import type {
+  BeforeInvocationEvent,
+  BeforeToolCallEvent,
+  AfterToolCallEvent,
+  BeforeModelCallEvent,
+  AfterModelCallEvent,
+} from '../hooks/events.js'
+import type { LocalAgent } from '../types/agent.js'
 import type { InterventionAction } from './actions.js'
 
 /**
@@ -37,7 +44,22 @@ export abstract class InterventionHandler {
   /** What to do when this handler throws. Defaults to 'throw'. */
   readonly onError: OnError = 'throw'
 
+  /** Called once during agent initialization. Use to register context-gathering hooks. */
+  initAgent(_agent: LocalAgent): void | Promise<void> {}
+
+  beforeInvocation(_event: BeforeInvocationEvent): InterventionAction | Promise<InterventionAction> {
+    return { type: 'proceed' }
+  }
+
   beforeToolCall(_event: BeforeToolCallEvent): InterventionAction | Promise<InterventionAction> {
+    return { type: 'proceed' }
+  }
+
+  afterToolCall(_event: AfterToolCallEvent): InterventionAction | Promise<InterventionAction> {
+    return { type: 'proceed' }
+  }
+
+  beforeModelCall(_event: BeforeModelCallEvent): InterventionAction | Promise<InterventionAction> {
     return { type: 'proceed' }
   }
 

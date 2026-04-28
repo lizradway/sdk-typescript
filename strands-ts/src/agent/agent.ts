@@ -36,7 +36,7 @@ import { StateStore } from '../state-store.js'
 import { AgentPrinter, getDefaultAppender, type Printer } from './printer.js'
 import type { Plugin } from '../plugins/plugin.js'
 import type { InterventionHandler } from '../interventions/handler.js'
-import { InterventionRegistry } from '../interventions/registry.js'
+import { InterventionRegistry, type AuditRecord } from '../interventions/registry.js'
 import { PluginRegistry } from '../plugins/registry.js'
 import { SlidingWindowConversationManager } from '../conversation-manager/sliding-window-conversation-manager.js'
 import { NullConversationManager } from '../conversation-manager/null-conversation-manager.js'
@@ -323,8 +323,7 @@ export class Agent implements LocalAgent, InvokableAgent {
     // needs to preempt plugins on After* events, the hook registry will need a
     // priority mechanism.
     if (config?.interventions && config.interventions.length > 0) {
-      this._interventionRegistry = new InterventionRegistry(config.interventions)
-      this._interventionRegistry.register(this._hooksRegistry)
+      this._interventionRegistry = new InterventionRegistry(config.interventions, this._hooksRegistry)
     }
 
     // Initialize plugin registry with all plugins to be initialized during initialize()
@@ -398,6 +397,8 @@ export class Agent implements LocalAgent, InvokableAgent {
       })
     )
 
+    await this._interventionRegistry?.initialize(this)
+
     await this._pluginRegistry.initialize(this)
 
     await this._hooksRegistry.invokeCallbacks(new InitializedEvent({ agent: this }))
@@ -449,11 +450,17 @@ export class Agent implements LocalAgent, InvokableAgent {
   }
 
   /**
-   * The intervention registry, if interventions were configured.
-   * Access the audit trail via `agent.interventions.auditLog`.
+   * Access to the intervention system — handlers, audit trail, and log management.
+   * Returns undefined if no interventions were configured.
    */
-  get interventions(): InterventionRegistry | undefined {
-    return this._interventionRegistry
+  get interventions(): { readonly handlers: readonly InterventionHandler[]; readonly auditLog: readonly AuditRecord[]; clearAuditLog: () => void } | undefined {
+    if (!this._interventionRegistry) return undefined
+    const registry = this._interventionRegistry
+    return {
+      get handlers(): readonly InterventionHandler[] { return registry.handlers },
+      get auditLog(): readonly AuditRecord[] { return registry.auditLog },
+      clearAuditLog: (): void => registry.clearAuditLog(),
+    }
   }
 
   /**
