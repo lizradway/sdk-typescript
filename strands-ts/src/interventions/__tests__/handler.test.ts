@@ -23,10 +23,10 @@ describe('InterventionHandler', () => {
   it('default methods return proceed', () => {
     const handler = new NoOpHandler()
 
-    expect(handler.beforeToolCall(new BeforeToolCallEvent({ agent, toolUse, tool: undefined }))).toEqual({
+    expect(handler.beforeToolCall(new BeforeToolCallEvent({ agent, toolUse, tool: undefined, invocationState: {} }))).toEqual({
       type: 'proceed',
     })
-    expect(handler.afterModelCall(new AfterModelCallEvent({ agent, model: {} as never }))).toEqual({
+    expect(handler.afterModelCall(new AfterModelCallEvent({ agent, model: {} as never, invocationState: {} }))).toEqual({
       type: 'proceed',
     })
   })

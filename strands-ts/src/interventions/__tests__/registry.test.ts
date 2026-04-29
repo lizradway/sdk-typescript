@@ -99,11 +99,11 @@ describe('InterventionRegistry', () => {
   })
 
   function makeBeforeInvocationEvent() {
-    return new BeforeInvocationEvent({ agent })
+    return new BeforeInvocationEvent({ agent, invocationState: {} })
   }
 
   function makeBeforeToolCallEvent() {
-    return new BeforeToolCallEvent({ agent, toolUse, tool: undefined })
+    return new BeforeToolCallEvent({ agent, toolUse, tool: undefined, invocationState: {} })
   }
 
   function makeAfterToolCallEvent() {
@@ -112,17 +112,19 @@ describe('InterventionRegistry', () => {
       toolUse,
       tool: undefined,
       result: new ToolResultBlock({ toolUseId: 'id-1', status: 'success', content: [new TextBlock('ok')] }),
+      invocationState: {},
     })
   }
 
   function makeBeforeModelCallEvent() {
-    return new BeforeModelCallEvent({ agent, model: {} as never })
+    return new BeforeModelCallEvent({ agent, model: {} as never, invocationState: {} })
   }
 
   function makeAfterModelCallEvent() {
     return new AfterModelCallEvent({
       agent,
       model: {} as never,
+      invocationState: {},
       stopData: {
         message: new Message({ role: 'assistant', content: [new TextBlock('response')] }),
         stopReason: 'endTurn',
