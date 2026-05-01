@@ -10,7 +10,7 @@ import type { HookRegistry } from '../hooks/registry.js'
 import type { HookableEventConstructor } from '../hooks/types.js'
 import { Message, TextBlock } from '../types/messages.js'
 import type { LocalAgent } from '../types/agent.js'
-import type { InterventionAction } from './actions.js'
+import type { Guide, InterventionAction } from './actions.js'
 import { InterventionHandler } from './handler.js'
 import { logger } from '../logging/logger.js'
 
@@ -75,10 +75,10 @@ export class InterventionRegistry {
   /** Initialize all handlers. Safe to call multiple times — only runs once. */
   async initialize(agent: LocalAgent): Promise<void> {
     if (this._initialized) return
-    this._initialized = true
     for (const handler of this._handlers) {
       await handler.initAgent(agent)
     }
+    this._initialized = true
   }
 
   get handlers(): readonly InterventionHandler[] {
@@ -105,7 +105,7 @@ export class InterventionRegistry {
    */
   private async _dispatch(event: HookableEvent, method: LifecycleMethod): Promise<void> {
     logger.debug(`event=<${method}> | dispatching to ${this._handlers.length} handler(s)`)
-    const guides: string[] = []
+    const guides: Array<{ handlerName: string; action: Guide }> = []
     const apply = this._getApplier(event, method)
 
     for (const handler of this._handlers) {
@@ -124,26 +124,37 @@ export class InterventionRegistry {
       }
 
       logger.debug(`handler=<${handler.name}>, event=<${method}> | returned ${action.type}`)
-      this._log(handler.name, method, action)
 
       if (action.type === 'guide') {
-        guides.push(`[${handler.name}] ${action.feedback}`)
+        guides.push({ handlerName: handler.name, action })
       } else {
+        this._log(handler.name, method, action)
         try {
           if (apply(action, handler.name)) {
             logger.debug(`handler=<${handler.name}>, event=<${method}> | short-circuited`)
             return
           }
         } catch (error) {
-          this._handleError(handler, method, error)
+          const errorAction = this._handleError(handler, method, error)
+          if (errorAction) {
+            this._log(handler.name, method, errorAction)
+            if (apply(errorAction, handler.name)) {
+              return
+            }
+          }
         }
       }
     }
 
-    // Guide feedback accumulates across handlers, applied after all have run.
+    // Guide feedback accumulates across handlers. Only logged and applied if
+    // no earlier handler short-circuited (deny/interrupt).
     if (guides.length > 0) {
+      for (const guide of guides) {
+        this._log(guide.handlerName, method, guide.action)
+      }
       logger.debug(`event=<${method}> | applying accumulated guide from ${guides.length} handler(s)`)
-      apply({ type: 'guide', feedback: guides.join('\n') }, '')
+      const feedback = guides.map((g) => `[${g.handlerName}] ${g.action.feedback}`).join('\n')
+      apply({ type: 'guide', feedback }, '')
     }
   }
 
@@ -158,7 +169,8 @@ export class InterventionRegistry {
     // beforeInvocation, beforeToolCall: cancel with feedback
     if (event instanceof BeforeInvocationEvent || event instanceof BeforeToolCallEvent) {
       return (action, handlerName) => {
-        switch (action.type) {
+        const actionType = action.type
+        switch (actionType) {
           case 'deny':
             event.cancel = `DENIED: ${action.reason}`
             return true
@@ -176,9 +188,7 @@ export class InterventionRegistry {
           case 'proceed':
             return false
           default:
-            logger.warn(
-              `handler=<${handlerName}>, event=<${method}> | ${(action as InterventionAction).type} has no effect on this event type`
-            )
+            logger.warn(`handler=<${handlerName}>, event=<${method}> | ${actionType} has no effect on this event type`)
             return false
         }
       }
