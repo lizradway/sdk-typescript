@@ -458,8 +458,8 @@ describe('InterventionRegistry', () => {
       expect(registry.auditLog).toHaveLength(2)
       expect(registry.auditLog[0]).toMatchObject({
         handler: 'throwing-proceed',
-        actionType: 'PROCEED',
-        detail: 'Handler threw: handler crashed',
+        actionType: 'ERROR',
+        detail: 'onError=proceed: handler crashed',
       })
       expect(registry.auditLog[1]).toMatchObject({
         handler: 'proceed-handler',
@@ -488,7 +488,8 @@ describe('InterventionRegistry', () => {
       expect(registry.auditLog).toHaveLength(1)
       expect(registry.auditLog[0]).toMatchObject({
         handler: 'throwing-deny',
-        actionType: 'DENY',
+        actionType: 'ERROR',
+        detail: 'onError=deny: handler crashed',
       })
     })
   })

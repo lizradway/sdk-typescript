@@ -114,6 +114,7 @@ export class InterventionRegistry {
       logger.debug(`handler=<${handler.name}>, event=<${method}> | evaluating`)
 
       let action: InterventionAction | undefined
+      let fromError = false
       try {
         // Safe: _registerHooks() only wires each method to its matching event type,
         // so the event is always the correct type for the method being called.
@@ -121,6 +122,7 @@ export class InterventionRegistry {
       } catch (error) {
         action = this._handleError(handler, method, error)
         if (!action) continue
+        fromError = true
       }
 
       logger.debug(`handler=<${handler.name}>, event=<${method}> | returned ${action.type}`)
@@ -128,7 +130,7 @@ export class InterventionRegistry {
       if (action.type === 'guide') {
         guides.push({ handlerName: handler.name, action })
       } else {
-        this._log(handler.name, method, action)
+        if (!fromError) this._log(handler.name, method, action)
         try {
           if (apply(action, handler.name)) {
             logger.debug(`handler=<${handler.name}>, event=<${method}> | short-circuited`)
@@ -137,7 +139,6 @@ export class InterventionRegistry {
         } catch (error) {
           const errorAction = this._handleError(handler, method, error)
           if (errorAction) {
-            this._log(handler.name, method, errorAction)
             if (apply(errorAction, handler.name)) {
               return
             }
@@ -282,12 +283,19 @@ export class InterventionRegistry {
   private _handleError(handler: InterventionHandler, method: string, error: unknown): InterventionAction | undefined {
     const errorMsg = error instanceof Error ? error.message : String(error)
 
+    this._auditLog.push({
+      handler: handler.name,
+      eventType: method,
+      actionType: 'ERROR',
+      detail: `onError=${handler.onError}: ${errorMsg}`,
+      timestamp: new Date().toISOString(),
+    })
+
     if (handler.onError === 'throw') {
       throw error
     } else if (handler.onError === 'deny') {
       return { type: 'deny', reason: `Handler threw: ${errorMsg}` }
     } else {
-      this._log(handler.name, method, { type: 'proceed', reason: `Handler threw: ${errorMsg}` })
       return undefined
     }
   }
