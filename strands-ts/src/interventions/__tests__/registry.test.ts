@@ -591,4 +591,90 @@ describe('InterventionRegistry', () => {
       expect(callOrder[1]).toBe('intervention-before')
     })
   })
+
+  describe('edge cases', () => {
+    it('guide on beforeModelCall injects a user message', async () => {
+      class ModelGuide extends InterventionHandler {
+        readonly name = 'model-guide'
+        override beforeModelCall(): Proceed | Guide | Transform {
+          return { type: 'guide', feedback: 'check your sources' }
+        }
+      }
+
+      new InterventionRegistry([new ModelGuide()], hookRegistry)
+
+      const event = makeBeforeModelCallEvent()
+      const messageCountBefore = event.agent.messages.length
+      await hookRegistry.invokeCallbacks(event)
+
+      expect(event.cancel).toBe(false)
+      expect(event.agent.messages).toHaveLength(messageCountBefore + 1)
+      const injected = event.agent.messages[event.agent.messages.length - 1]!
+      expect(injected.role).toBe('user')
+      expect(injected.content[0]).toMatchObject({ type: 'textBlock', text: '[model-guide] check your sources' })
+    })
+
+    it('transform apply() error is handled via onError policy', async () => {
+      class BadTransform extends InterventionHandler {
+        readonly name = 'bad-transform'
+        override readonly onError = 'proceed' as const
+        override beforeToolCall(): InterventionAction {
+          return {
+            type: 'transform',
+            apply: () => {
+              throw new Error('apply boom')
+            },
+          }
+        }
+      }
+
+      class AfterTransform extends InterventionHandler {
+        readonly name = 'after-transform'
+        override beforeToolCall(): InterventionAction {
+          return { type: 'proceed', reason: 'still running' }
+        }
+      }
+
+      new InterventionRegistry([new BadTransform(), new AfterTransform()], hookRegistry)
+
+      const event = makeBeforeToolCallEvent()
+      await hookRegistry.invokeCallbacks(event)
+      // onError=proceed means the error is swallowed and next handler runs
+      expect(event.cancel).toBe(false)
+    })
+
+    it('transform apply() error with onError=throw propagates', async () => {
+      class BadTransform extends InterventionHandler {
+        readonly name = 'bad-transform'
+        override readonly onError = 'throw' as const
+        override beforeToolCall(): InterventionAction {
+          return {
+            type: 'transform',
+            apply: () => {
+              throw new Error('apply boom')
+            },
+          }
+        }
+      }
+
+      new InterventionRegistry([new BadTransform()], hookRegistry)
+
+      await expect(hookRegistry.invokeCallbacks(makeBeforeToolCallEvent())).rejects.toThrow('apply boom')
+    })
+
+    it('initAgent throwing leaves registry uninitialized for retry', async () => {
+      class FailingInit extends InterventionHandler {
+        readonly name = 'failing-init'
+        override initAgent(): void {
+          throw new Error('init failed')
+        }
+      }
+
+      const registry = new InterventionRegistry([new FailingInit()], hookRegistry)
+
+      await expect(registry.initialize({} as never)).rejects.toThrow('init failed')
+      // Can retry — not marked as initialized
+      await expect(registry.initialize({} as never)).rejects.toThrow('init failed')
+    })
+  })
 })
