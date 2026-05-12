@@ -224,8 +224,7 @@ export type {
 export type { Plugin } from './plugins/index.js'
 
 // Intervention system
-export { InterventionHandler } from './interventions/index.js'
-export { InterventionActions } from './interventions/index.js'
+export { InterventionHandler, InterventionActions } from './interventions/index.js'
 export type { OnError } from './interventions/index.js'
 
 // Retry
