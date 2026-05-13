@@ -19,13 +19,13 @@ jobs:
         with:
           skip-check: ${{ github.event_name == 'merge_group' }}
           username: ${{ github.event.pull_request.user.login || 'invalid' }}
-          allowed-roles: 'triage,write,admin'
+          allowed-roles: 'maintain,triage,write,admin'
 
   run-integration-tests:
     name: Run integration tests
     runs-on: ubuntu-latest
     needs: authorization-check
-    environment: ${{ github.event.pull_request.draft == true && 'manual-approval' || (needs.authorization-check.outputs.approval-env != 'auto-approve' && needs.authorization-check.outputs.approval-env || '') }}
+    environment: ${{ github.event.pull_request.draft == true && 'manual-approval' || needs.authorization-check.outputs.approval-env }}
     permissions:
       id-token: write
       pull-requests: read
