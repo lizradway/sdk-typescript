@@ -16,6 +16,8 @@ export type LifecycleEvent =
 /**
  * Allow the operation to continue unchanged.
  *
+ * @param reason - Optional metadata for debugging/logging. Not shown to the model.
+ *
  * @example
  * ```typescript
  * return { type: 'proceed' }
@@ -24,8 +26,10 @@ export type LifecycleEvent =
 export type Proceed = { type: 'proceed'; reason?: string }
 
 /**
- * Block the operation. On Before* events, sets event.cancel. On afterToolCall,
- * sets event.retry = false.
+ * Block the operation. On Before* events, sets event.cancel with the reason text.
+ * The reason is shown to the model as the cancellation message.
+ *
+ * @param reason - Why the operation was blocked. Shown to the model.
  *
  * @example
  * ```typescript
@@ -65,6 +69,9 @@ export type Guide = { type: 'guide'; feedback: string; reason?: string }
  * Pause for human approval. Calls event.interrupt() to halt agent execution
  * until the user responds. Only supported on beforeToolCall.
  *
+ * @param prompt - The message shown to the human for approval. Not shown to the model.
+ * @param reason - Optional metadata for debugging/logging. Not shown to the model.
+ *
  * @example
  * ```typescript
  * override beforeToolCall(event: BeforeToolCallEvent): InterventionAction {
@@ -83,6 +90,9 @@ export type Interrupt = { type: 'interrupt'; prompt: string; reason?: string }
  *
  * The handler already has the typed event from its lifecycle method, so `apply`
  * can close over it directly — no cast needed:
+ *
+ * @param apply - Function that mutates the event. Not shown to the model.
+ * @param reason - Optional metadata for debugging/logging. Not shown to the model.
  *
  * @example
  * ```typescript
