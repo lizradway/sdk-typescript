@@ -40,6 +40,8 @@ import { PluginRegistry } from '../plugins/registry.js'
 import { SlidingWindowConversationManager } from '../conversation-manager/sliding-window-conversation-manager.js'
 import { NullConversationManager } from '../conversation-manager/null-conversation-manager.js'
 import { ConversationManager } from '../conversation-manager/conversation-manager.js'
+import type { ContextManagerParam } from './context-manager-config.js'
+import { resolveContextManager } from './resolve-context-manager.js'
 import { HookRegistryImplementation } from '../hooks/registry.js'
 import type { HookableEventConstructor, HookCallback, HookCallbackOptions, HookCleanup } from '../hooks/types.js'
 import {
@@ -157,6 +159,19 @@ export type AgentConfig = {
    * Defaults to true.
    */
   printer?: boolean
+  /**
+   * Pre-composed context management strategy.
+   *
+   * - `"auto"`: enables tool result caching (threshold=2500, preview=500),
+   *   proactive compression (threshold=0.7), and message protection (1 message pinned).
+   * - Object: fine-grained control over strategy, storage, caching, and compression settings.
+   * - `undefined` (default): no context management facade; use `conversationManager`
+   *   and `plugins` directly.
+   *
+   * Coexists with `conversationManager`: if both are set, the user's conversation manager
+   * is used as-is and the tool result cache plugin is still added.
+   */
+  contextManager?: ContextManagerParam
   /**
    * Conversation manager for handling message history and context overflow.
    * Defaults to SlidingWindowConversationManager with windowSize of 40.
@@ -314,17 +329,28 @@ export class Agent implements LocalAgent, InvokableAgent {
       this.model = config?.model ?? new BedrockModel()
     }
 
+    // Resolve contextManager facade into plugins and conversation manager
+    let contextManagerPlugins: Plugin[] = []
+    let facadeConversationManager: ConversationManager | undefined
+    if (config?.contextManager) {
+      const resolved = resolveContextManager(config.contextManager, config.conversationManager, config.plugins)
+      facadeConversationManager = resolved.conversationManager
+      contextManagerPlugins = resolved.plugins
+    }
+
     // Validate and assign conversation manager
     if (this.model.stateful) {
-      if (config?.conversationManager) {
+      if (config?.conversationManager || config?.contextManager) {
         throw new Error(
-          'Cannot use a conversationManager with a stateful model. The model manages conversation state server-side.'
+          'Cannot use a conversationManager or contextManager with a stateful model. The model manages conversation state server-side.'
         )
       }
       this._conversationManager = new NullConversationManager()
     } else {
       this._conversationManager =
-        config?.conversationManager ?? new SlidingWindowConversationManager({ windowSize: 40 })
+        facadeConversationManager ??
+        config?.conversationManager ??
+        new SlidingWindowConversationManager({ windowSize: 40 })
     }
 
     const { tools, mcpClients } = flattenTools(config?.tools ?? [])
@@ -353,9 +379,12 @@ export class Agent implements LocalAgent, InvokableAgent {
     // - Retry-strategy ordering is not load-bearing for correctness: `DefaultModelRetryStrategy`
     //   guards on `event.retry`, so a user hook that already set it short-circuits
     //   the strategy regardless of registration order.
+    // - contextManager plugins go before user plugins so the offloader's AfterToolCallEvent
+    //   hook fires first, ensuring large results are cached before user hooks see the event.
     this._pluginRegistry = new PluginRegistry([
       this._conversationManager,
       ...retryStrategies,
+      ...contextManagerPlugins,
       ...(config?.plugins ?? []),
       ...(config?.sessionManager ? [config.sessionManager] : []),
       new ModelPlugin(this.model),

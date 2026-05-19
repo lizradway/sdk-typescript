@@ -16,6 +16,12 @@ export { AgentResult } from './types/agent.js'
 export type { AgentConfig, ToolList, ToolExecutorStrategy } from './agent/agent.js'
 export type { AgentAsToolOptions } from './agent/agent-as-tool.js'
 export type { InvocationState, InvokeArgs, InvokeOptions, LocalAgent } from './types/agent.js'
+export type {
+  ContextManagerParam,
+  ContextManagerConfig,
+  ToolResultCacheFacadeConfig,
+  CompressionFacadeConfig,
+} from './agent/context-manager-config.js'
 
 // Error types
 // Note: CancelledError is intentionally not exported — it is an internal

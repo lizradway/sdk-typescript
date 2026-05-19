@@ -103,6 +103,13 @@ export type SlidingWindowConversationManagerConfig = {
    * - `false` or omitted: disabled, only reactive overflow recovery is used.
    */
   proactiveCompression?: boolean | ProactiveCompressionConfig
+
+  /**
+   * Number of messages at the start of the conversation to protect from eviction.
+   * These messages are never trimmed by the sliding window or proactive compression.
+   * Defaults to 0 (no protection).
+   */
+  protectedMessages?: number
 }
 
 /**
@@ -121,6 +128,7 @@ export type SlidingWindowConversationManagerConfig = {
 export class SlidingWindowConversationManager extends ConversationManager {
   private readonly _windowSize: number
   private readonly _shouldTruncateResults: boolean
+  private readonly _protectedMessages: number
 
   /**
    * Unique identifier for this conversation manager.
@@ -136,6 +144,14 @@ export class SlidingWindowConversationManager extends ConversationManager {
     super(config)
     this._windowSize = config?.windowSize ?? 40
     this._shouldTruncateResults = config?.shouldTruncateResults ?? true
+    const protectedMessages = config?.protectedMessages ?? 0
+    if (protectedMessages < 0) {
+      throw new Error(`protectedMessages must be non-negative, got ${protectedMessages}`)
+    }
+    if (protectedMessages > 0 && protectedMessages >= this._windowSize) {
+      throw new Error(`protectedMessages (${protectedMessages}) must be less than windowSize (${this._windowSize})`)
+    }
+    this._protectedMessages = protectedMessages
   }
 
   /**
@@ -216,6 +232,9 @@ export class SlidingWindowConversationManager extends ConversationManager {
     // Try to trim messages when tool result cannot be truncated anymore
     // If the number of messages is less than the window_size, then we default to 2, otherwise, trim to window size
     let trimIndex = messages.length <= this._windowSize ? 2 : messages.length - this._windowSize
+
+    // Never trim protected messages at the start of the conversation
+    trimIndex = Math.max(trimIndex, this._protectedMessages)
 
     // Find the next valid trim point that:
     // 1. Starts with a user message (required by some models)
@@ -448,7 +467,7 @@ export class SlidingWindowConversationManager extends ConversationManager {
    * @returns Index of the oldest message with tool results, or undefined if no such message exists.
    */
   private _findOldestMessageWithToolResults(messages: Message[]): number | undefined {
-    for (let idx = 0; idx < messages.length; idx++) {
+    for (let idx = this._protectedMessages; idx < messages.length; idx++) {
       const currentMessage = messages[idx]!
 
       const hasToolResult = currentMessage.content.some((block) => block.type === 'toolResultBlock')
