@@ -1,5 +1,5 @@
 import { InterventionHandler } from '../../interventions/handler.js'
-import { confirm, proceed } from '../../interventions/actions.js'
+import { confirm, proceed, defaultEvaluate } from '../../interventions/actions.js'
 import type { InterventionAction } from '../../interventions/actions.js'
 import type { BeforeToolCallEvent } from '../../hooks/events.js'
 import type { JSONValue } from '../../types/json.js'
@@ -8,10 +8,10 @@ const TRUST_RESPONSES = new Set(['t', 'trust'])
 const TRUSTED_TOOLS_KEY = 'hitl:trustedTools'
 
 /**
- * Default CLI prompt that reads from stdin.
+ * CLI prompt that reads from stdin.
  * Serializes prompts so concurrent tool calls don't collide on stdin.
  */
-function createDefaultAsk(includeTrust: boolean): (prompt: string) => Promise<JSONValue> {
+function createStdioAsk(includeTrust: boolean): (prompt: string) => Promise<JSONValue> {
   const options = includeTrust ? '(y/n/t)' : '(y/n)'
   let queue: Promise<unknown> = Promise.resolve()
 
@@ -56,19 +56,26 @@ export interface HumanInTheLoopConfig {
   allowedTools?: string[]
 
   /**
-   * When true, the default CLI prompt includes a "trust" option (t).
-   * If the human responds with 't', the tool is approved AND remembered
+   * When true, trust responses approve the tool AND remember it
    * in `agent.appState` for the rest of the session (won't ask again).
+   * Works in both interrupt/resume and inline `ask` modes.
    *
    * Negated tools (`!tool`) cannot be trusted.
-   * Has no effect without an `ask` callback (interrupt/resume mode has no inline session).
    *
    * Defaults to `false`.
    */
   enableTrust?: boolean
 
   /**
-   * Custom response validator. Defaults to accepting `true`, `'y'`/`'yes'` (case-insensitive).
+   * Custom trust response validator. Defaults to accepting `'t'`/`'trust'` (case-insensitive).
+   * When this returns true, the tool is approved AND trusted for the session.
+   *
+   * Only evaluated when `enableTrust` is true.
+   */
+  evaluateTrust?: (response: JSONValue) => boolean
+
+  /**
+   * Custom approval response validator. Defaults to accepting `true`, `'y'`/`'yes'` (case-insensitive).
    */
   evaluate?: (response: JSONValue) => boolean
 
@@ -123,6 +130,7 @@ export class HumanInTheLoop extends InterventionHandler {
 
   private readonly _allowedTools: Set<string>
   private readonly _enableTrust: boolean
+  private readonly _evaluateTrust: (response: JSONValue) => boolean
   private readonly _evaluate: ((response: JSONValue) => boolean) | undefined
   private readonly _ask: ((prompt: string) => Promise<JSONValue>) | undefined
 
@@ -130,8 +138,9 @@ export class HumanInTheLoop extends InterventionHandler {
     super()
     this._allowedTools = new Set(config?.allowedTools ?? [])
     this._enableTrust = config?.enableTrust ?? false
+    this._evaluateTrust = config?.evaluateTrust ?? ((r) => this._isTrustResponse(r))
     this._evaluate = config?.evaluate
-    this._ask = config?.ask === 'stdio' ? createDefaultAsk(this._enableTrust) : config?.ask
+    this._ask = config?.ask === 'stdio' ? createStdioAsk(this._enableTrust) : config?.ask
   }
 
   override async beforeToolCall(event: BeforeToolCallEvent): Promise<InterventionAction> {
@@ -142,22 +151,28 @@ export class HumanInTheLoop extends InterventionHandler {
 
     const prompt = `Tool "${toolName}" requires human approval. Input: ${JSON.stringify(event.toolUse.input)}`
 
+    const evaluate = (response: JSONValue): boolean => {
+      if (this._enableTrust && this._evaluateTrust(response)) {
+        this._trustTool(event, toolName)
+        return true
+      }
+      return this._evaluate ? this._evaluate(response) : defaultEvaluate(response)
+    }
+
     if (!this._ask) {
-      return confirm(prompt, {
-        ...(this._evaluate && { evaluate: this._evaluate }),
-      })
+      return confirm(prompt, { evaluate })
     }
 
     const response = await this._ask(prompt)
 
-    if (this._enableTrust && this._isTrustResponse(response)) {
+    if (this._enableTrust && this._evaluateTrust(response)) {
       this._trustTool(event, toolName)
       return proceed()
     }
 
     return confirm(prompt, {
       response,
-      ...(this._evaluate && { evaluate: this._evaluate }),
+      evaluate: this._evaluate ?? defaultEvaluate,
     })
   }
 

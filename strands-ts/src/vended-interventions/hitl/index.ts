@@ -2,8 +2,8 @@
  * Human-in-the-loop intervention for Strands Agents.
  *
  * Pauses agent execution before tool calls to request human approval.
- * Defaults to prompting in the terminal (CLI), but supports custom UIs
- * and stateless interrupt/resume for API deployments.
+ * Defaults to interrupt/resume mode for stateless deployments.
+ * Pass `ask: 'stdio'` for CLI prompting or a custom `ask` function for other UIs.
  *
  * @example
  * ```typescript
@@ -15,8 +15,8 @@
  *   interventions: [new HumanInTheLoop({ allowedTools: ['readTool'] })],
  * })
  *
- * // Agent automatically prompts in terminal when it tries to use deleteTool
- * await agent.invoke('Delete the file')
+ * // Default: agent pauses with stopReason 'interrupt', caller resumes with response
+ * const result = await agent.invoke('Delete the file')
  * ```
  */
 

@@ -276,7 +276,7 @@ describe('HumanInTheLoop', () => {
       expect(askCount).toBe(1)
     })
 
-    it('does not trust when enableTrust is false (default)', async () => {
+    it('does not trust when enableTrust is false even with "t" response', async () => {
       let askCount = 0
 
       const model = new MockMessageModel()
@@ -291,9 +291,10 @@ describe('HumanInTheLoop', () => {
         tools: [tool],
         interventions: [
           new HumanInTheLoop({
+            enableTrust: false,
             ask: async () => {
               askCount++
-              return 'yes'
+              return 't'
             },
           }),
         ],
@@ -302,6 +303,8 @@ describe('HumanInTheLoop', () => {
 
       await agent.invoke('Run tool twice')
 
+      // 't' is not recognized as approval when trust is disabled, so tool is denied both times
+      // but ask is still called both times (no trust memory)
       expect(askCount).toBe(2)
     })
 
@@ -388,28 +391,4 @@ describe('HumanInTheLoop', () => {
     })
   })
 
-  describe('stdio mode (ask: "stdio")', () => {
-    it('uses stdio when ask is "stdio" (tested via mock)', async () => {
-      const model = new MockMessageModel()
-        .addTurn({ type: 'toolUseBlock', name: 'myTool', toolUseId: 'tool-1', input: {} })
-        .addTurn({ type: 'textBlock', text: 'Done' })
-
-      let toolExecuted = false
-      const tool = createMockTool('myTool', () => {
-        toolExecuted = true
-        return 'executed'
-      })
-
-      const agent = new Agent({
-        model,
-        tools: [tool],
-        interventions: [new HumanInTheLoop({ ask: async () => 'yes' })],
-        printer: false,
-      })
-
-      const result = await agent.invoke('Run tool')
-      expect(result.stopReason).toBe('endTurn')
-      expect(toolExecuted).toBe(true)
-    })
-  })
 })
