@@ -13,6 +13,8 @@ import {
   type ProactiveCompressionConfig,
   type ConversationManagerReduceOptions,
 } from './conversation-manager.js'
+import { isPinned, computePinnedIndices, pinMessage } from '../context-manager/pin.js'
+import { AfterInvocationEvent } from '../hooks/events.js'
 import { logger } from '../logging/logger.js'
 import { normalizeError } from '../errors.js'
 import type { Model } from '../models/model.js'
@@ -83,6 +85,14 @@ export type SummarizingConversationManagerConfig = {
    * - `false` or omitted: disabled, only reactive overflow recovery is used.
    */
   proactiveCompression?: boolean | ProactiveCompressionConfig
+
+  /**
+   * Pin the first N messages so they are protected from eviction during summarization.
+   * Pinned messages are excluded from the summary and preserved in place.
+   *
+   * For agent-controlled pinning, add `pinMessageTool` to the agent's tools array.
+   */
+  pinMessages?: number
 }
 
 /**
@@ -99,6 +109,7 @@ export class SummarizingConversationManager extends ConversationManager {
   private readonly _summaryRatio: number
   private readonly _preserveRecentMessages: number
   private readonly _summarizationSystemPrompt: string
+  private readonly _pinMessages: number | undefined
 
   constructor(config?: SummarizingConversationManagerConfig) {
     super(config)
@@ -107,6 +118,25 @@ export class SummarizingConversationManager extends ConversationManager {
     this._summaryRatio = Math.max(0.1, Math.min(0.8, config?.summaryRatio ?? 0.3))
     this._preserveRecentMessages = config?.preserveRecentMessages ?? 10
     this._summarizationSystemPrompt = config?.summarizationSystemPrompt ?? DEFAULT_SUMMARIZATION_PROMPT
+    this._pinMessages = config?.pinMessages
+  }
+
+  public override initAgent(agent: LocalAgent): void {
+    super.initAgent(agent)
+
+    if (this._pinMessages !== undefined && this._pinMessages > 0) {
+      agent.addHook(AfterInvocationEvent, (event) => {
+        this._pinFirstN(event.agent.messages, this._pinMessages!)
+      })
+    }
+  }
+
+  private _pinFirstN(messages: Message[], n: number): void {
+    for (let i = 0; i < Math.min(n, messages.length); i++) {
+      if (!isPinned(messages[i]!)) {
+        messages[i] = pinMessage(messages[i]!)
+      }
+    }
   }
 
   /**
@@ -164,13 +194,29 @@ export class SummarizingConversationManager extends ConversationManager {
     // Adjust split point to avoid breaking tool use/result pairs
     messagesToSummarizeCount = this._adjustSplitPointForToolPairs(messages, messagesToSummarizeCount)
 
-    const messagesToSummarize = messages.slice(0, messagesToSummarizeCount)
+    // Compute effectively pinned indices (including tool-pair partners)
+    const pinnedIndices = computePinnedIndices(messages, 0, messagesToSummarizeCount)
+
+    // Partition [0, messagesToSummarizeCount) into pinned (preserve) and non-pinned (summarize)
+    const pinnedToPreserve: Message[] = []
+    const toSummarize: Message[] = []
+    for (let i = 0; i < messagesToSummarizeCount; i++) {
+      if (pinnedIndices.has(i)) {
+        pinnedToPreserve.push(messages[i]!)
+      } else {
+        toSummarize.push(messages[i]!)
+      }
+    }
+
+    if (toSummarize.length === 0) {
+      return false
+    }
 
     // Generate summary via model call
-    const summaryMessage = await this._generateSummary(messagesToSummarize, model)
+    const summaryMessage = await this._generateSummary(toSummarize, model)
 
-    // Replace summarized messages with the summary
-    messages.splice(0, messagesToSummarizeCount, summaryMessage)
+    // Replace summarized range with pinned messages + summary
+    messages.splice(0, messagesToSummarizeCount, ...pinnedToPreserve, summaryMessage)
 
     return true
   }

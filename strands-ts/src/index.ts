@@ -263,6 +263,9 @@ export {
   type SummarizingConversationManagerConfig,
 } from './conversation-manager/summarizing-conversation-manager.js'
 
+// Context Manager
+export { pinMessage, unpinMessage, isPinned, pinMessageTool } from './context-manager/index.js'
+
 // Logging
 export { configureLogging } from './logging/logger.js'
 export type { Logger } from './logging/types.js'

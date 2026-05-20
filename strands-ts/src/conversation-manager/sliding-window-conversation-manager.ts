@@ -14,6 +14,7 @@ import {
   type ProactiveCompressionConfig,
   type ConversationManagerReduceOptions,
 } from './conversation-manager.js'
+import { isPinned, computePinnedIndices, pinMessage } from '../context-manager/pin.js'
 import { logger } from '../logging/logger.js'
 
 const PRESERVE_CHARS = 200
@@ -103,6 +104,14 @@ export type SlidingWindowConversationManagerConfig = {
    * - `false` or omitted: disabled, only reactive overflow recovery is used.
    */
   proactiveCompression?: boolean | ProactiveCompressionConfig
+
+  /**
+   * Pin the first N messages so they are protected from eviction during reduction.
+   * Pinned messages are skipped by both trimming and tool-result truncation.
+   *
+   * For agent-controlled pinning, add `pinMessageTool` to the agent's tools array.
+   */
+  pinMessages?: number
 }
 
 /**
@@ -121,6 +130,7 @@ export type SlidingWindowConversationManagerConfig = {
 export class SlidingWindowConversationManager extends ConversationManager {
   private readonly _windowSize: number
   private readonly _shouldTruncateResults: boolean
+  private readonly _pinMessages: number | undefined
 
   /**
    * Unique identifier for this conversation manager.
@@ -136,6 +146,7 @@ export class SlidingWindowConversationManager extends ConversationManager {
     super(config)
     this._windowSize = config?.windowSize ?? 40
     this._shouldTruncateResults = config?.shouldTruncateResults ?? true
+    this._pinMessages = config?.pinMessages
   }
 
   /**
@@ -151,9 +162,23 @@ export class SlidingWindowConversationManager extends ConversationManager {
   public override initAgent(agent: LocalAgent): void {
     super.initAgent(agent)
 
+    if (this._pinMessages !== undefined && this._pinMessages > 0) {
+      agent.addHook(AfterInvocationEvent, (event) => {
+        this._pinFirstN(event.agent.messages, this._pinMessages!)
+      })
+    }
+
     agent.addHook(AfterInvocationEvent, (event) => {
       this._applyManagement(event.agent.messages)
     })
+  }
+
+  private _pinFirstN(messages: Message[], n: number): void {
+    for (let i = 0; i < Math.min(n, messages.length); i++) {
+      if (!isPinned(messages[i]!)) {
+        messages[i] = pinMessage(messages[i]!)
+      }
+    }
   }
 
   /**
@@ -264,8 +289,25 @@ export class SlidingWindowConversationManager extends ConversationManager {
       return false
     }
 
-    // trimIndex is guaranteed to be < messages.length here, so splice always removes at least one message
-    messages.splice(0, trimIndex)
+    // Compute effectively pinned indices (including tool-pair partners)
+    const pinnedIndices = computePinnedIndices(messages, 0, trimIndex)
+
+    // Collect non-pinned indices in [0, trimIndex) to remove
+    const indicesToRemove: number[] = []
+    for (let i = 0; i < trimIndex; i++) {
+      if (!pinnedIndices.has(i)) {
+        indicesToRemove.push(i)
+      }
+    }
+
+    if (indicesToRemove.length === 0) {
+      return false
+    }
+
+    // Remove in reverse order to keep indices stable
+    for (let i = indicesToRemove.length - 1; i >= 0; i--) {
+      messages.splice(indicesToRemove[i]!, 1)
+    }
     return true
   }
 
@@ -450,6 +492,10 @@ export class SlidingWindowConversationManager extends ConversationManager {
   private _findOldestMessageWithToolResults(messages: Message[]): number | undefined {
     for (let idx = 0; idx < messages.length; idx++) {
       const currentMessage = messages[idx]!
+
+      if (isPinned(currentMessage)) {
+        continue
+      }
 
       const hasToolResult = currentMessage.content.some((block) => block.type === 'toolResultBlock')
 
