@@ -22,11 +22,10 @@ export function ensureDependencies(): void {
   try {
     execSync('python3 -c "import pyarrow; import tree_sitter"', { stdio: 'pipe' })
   } catch {
-    console.error(
+    throw new Error(
       'Missing Python dependencies for ContextBench evaluation.\n' +
         'Install with: pip install pyarrow tree-sitter tree-sitter-languages datasets'
     )
-    process.exit(1)
   }
 }
 

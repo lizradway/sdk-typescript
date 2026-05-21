@@ -16,14 +16,16 @@ export async function runBenchmark(config: BenchmarkConfig, task: ContextBenchTa
   try {
     const agent = config.createAgent(task)
 
+    let timeoutId: ReturnType<typeof setTimeout>
     const result = await Promise.race([
       agent.invoke(
         `The repository is cloned at: ${repoDir}\n\nInvestigate the issue and find all relevant code locations.`
       ),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Benchmark timed out after 10 minutes')), 600_000)
-      ),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('Benchmark timed out after 10 minutes')), 600_000)
+      }),
     ])
+    clearTimeout(timeoutId!)
 
     const latencyMs = performance.now() - startTime
     const trajectory = extractTrajectory(agent.messages, repoDir)

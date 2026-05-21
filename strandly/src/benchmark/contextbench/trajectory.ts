@@ -48,6 +48,7 @@ function toRelativePath(filePath: string, repoDir?: string): string {
   return filePath
 }
 
+// Best-effort extraction — won't catch all patterns (e.g. grep -rn, find -exec, piped commands, quoted paths)
 function extractFilePathsFromToolCall(toolName: string, input: Record<string, unknown>): string[] {
   if (toolName === 'file_editor' || toolName === 'fileEditor') {
     const path = (input.path ?? input.file_path ?? input.filePath) as string | undefined

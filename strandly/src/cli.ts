@@ -164,8 +164,13 @@ program
   .option('--output-md <path>', 'Write markdown summary to file')
   .option('--cloudwatch', 'Emit metrics to CloudWatch')
   .action(async (opts) => {
+    const minCoverage = opts.minCoverage ? parseFloat(opts.minCoverage) : undefined
+    if (minCoverage !== undefined && (isNaN(minCoverage) || minCoverage < 0 || minCoverage > 1)) {
+      console.error('--min-coverage must be a number between 0 and 1')
+      process.exit(1)
+    }
     const { benchmark } = await import('./benchmark/index.js')
-    await benchmark({ ...opts, minCoverage: opts.minCoverage ? parseFloat(opts.minCoverage) : undefined, model: opts.model })
+    await benchmark({ ...opts, minCoverage, model: opts.model })
   })
 
 program.parse()
